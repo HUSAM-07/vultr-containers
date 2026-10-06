@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const dataFile = join(dirname(fileURLToPath(import.meta.url)), "data", "runs.json");
+const dataFile = process.env.FORGE_DATA_FILE || join(dirname(fileURLToPath(import.meta.url)), "data", "runs.json");
 // ponytail: single-process JSON store; move to Convex plus a durable queue before multi-instance deployment.
 const runs = load();
 let active = 0;
@@ -137,6 +137,11 @@ function send(response, status, value) {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   response.end(JSON.stringify(value));
 }
+function visibleRun(run) {
+  const { ownerId, ...visible } = run;
+  void ownerId;
+  return visible;
+}
 export function app() {
   return createServer(async (request, response) => {
     if (request.url === "/health") return send(response, 200, { ok: true,
@@ -145,11 +150,20 @@ export function app() {
     if (!process.env.WEB_BACKEND_TOKEN ||
         request.headers.authorization !== "Bearer " + process.env.WEB_BACKEND_TOKEN)
       return send(response, 401, { error: "Unauthorized" });
+    const ownerId = request.headers["x-session-id"];
+    if (typeof ownerId !== "string" || !/^[a-f0-9-]{36}$/.test(ownerId))
+      return send(response, 401, { error: "Missing session" });
     if (request.method === "GET" && request.url === "/runs")
-      return send(response, 200, runs.map(({ code, output, ...summary }) => summary));
+      return send(response, 200, runs.filter(run => run.ownerId === ownerId)
+        .map(run => {
+          const { code, output, ...summary } = visibleRun(run);
+          void code; void output;
+          return summary;
+        }));
     if (request.method === "GET" && /^\/runs\/[a-f0-9-]+$/.test(request.url)) {
-      const run = runs.find(item => item.id === request.url.slice(6));
-      return send(response, run ? 200 : 404, run || { error: "Run not found" });
+      const run = runs.find(item => item.id === request.url.slice(6) && item.ownerId === ownerId);
+      if (!run) return send(response, 404, { error: "Run not found" });
+      return send(response, 200, visibleRun(run));
     }
     if (request.method === "POST" && request.url === "/runs") {
       try {
@@ -161,12 +175,12 @@ export function app() {
         const daily = runs.filter(run => Date.now() - run.createdAt < 86400000).length;
         if (active >= 2 || daily >= Number(process.env.MAX_RUNS_PER_DAY || 50))
           return send(response, 429, { error: "Demo capacity reached" });
-        const run = { id: randomUUID(), task: task.trim(), project: project.trim(), mode,
+        const run = { id: randomUUID(), ownerId, task: task.trim(), project: project.trim(), mode,
           status: "queued", plan: [], steps: [], createdAt: Date.now() };
         runs.unshift(run);
         save();
         void execute(run);
-        return send(response, 202, run);
+        return send(response, 202, visibleRun(run));
       } catch (error) { return send(response, 400, { error: error.message }); }
     }
     send(response, 404, { error: "Not found" });

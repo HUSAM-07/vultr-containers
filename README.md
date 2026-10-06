@@ -13,15 +13,15 @@ Requires Node 24+ and Docker. The backend only starts agent tasks when `VULTR_IN
 5. In another terminal: `cd web && npm install && npm run dev`.
 6. Open `http://localhost:3000`.
 
-`npm test` checks plan validation and Docker isolation flags; `npm run build` builds the frontend.
+`npm test` checks plan validation, Docker isolation flags, and visitor session isolation; `npm run build` builds the frontend.
 
 ## Deploy
 
-**Vultr VM:** Install Node 24+ and Docker, create a non-root application user, pre-pull `python:3.12-alpine`, provide the server environment variables through a protected service environment, and run `node server/index.mjs` behind HTTPS. Allow incoming traffic only to the reverse proxy. Restrict access to Docker; its socket is host-powerful. Keep `server/data/` on persistent storage and back it up. This single-process JSON store is a hackathon ceiling; use Convex and a durable queue before multi-tenant production.
+**Vultr VM:** Install Node 24+ and Docker, create a non-root application user, pre-pull `python:3.12-alpine`, provide the server environment variables through a protected service environment, and run `node server/index.mjs` behind HTTPS. Allow incoming traffic only to the reverse proxy. Restrict access to Docker; its socket is host-powerful. Keep `server/data/` on persistent storage and back it up, or set `FORGE_DATA_FILE` to another persistent path. This single-process JSON store is a hackathon ceiling; use Convex and a durable queue before multi-tenant production.
 
 **Vercel:** Import the GitHub repository with **Root Directory = `web`**. Set `VULTR_BACKEND_URL` to the VM's HTTPS API origin and `VULTR_BACKEND_TOKEN` to the same backend secret. These variables are server-only. Vercel serves the UI and forwards API requests; all agent model calls and sandbox execution remain on Vultr. Publish the Vercel URL as the demo application URL.
 
-The public demo has a global capacity cap, not user accounts. Do not use it for private data or real organization integrations. Add authentication and tenant enforcement before broad deployment.
+The public demo issues each browser a signed, HTTP-only session cookie and scopes run history to it. It also has a global capacity cap. Sessions are browser-local and are not user accounts; clearing cookies loses access to earlier runs. Do not use the demo for private data or real organization integrations. Add authentication and tenant enforcement before broad deployment.
 
 ## UI provenance
 
@@ -30,4 +30,4 @@ The public demo has a global capacity cap, not user accounts. Do not use it for 
 
 ## Current limits
 
-Runs are retained as JSON on one VM; interrupted runs are marked failed on restart. No account system, cross-device project naming, file artifacts, browser automation, or external write approvals yet. The attached ADLC specification covers those later phases.
+Runs are retained as JSON on one VM; interrupted runs are marked failed on restart. Project names are browser-local. No account system, file artifacts, browser automation, or external write approvals yet. The attached ADLC specification covers those later phases.
