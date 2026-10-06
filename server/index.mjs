@@ -33,13 +33,24 @@ export function parsePlan(text) {
       !value.code || value.code.length > 20000) throw Error("Invalid agent plan");
   return { plan: value.plan, code: value.code };
 }
+export function parseArtifact(stdout) {
+  const marker = "FORGE_ARTIFACT:";
+  const lines = stdout.split("\n");
+  const index = lines.findIndex(line => line.startsWith(marker));
+  if (index < 0) return { stdout };
+  const artifact = JSON.parse(lines[index].slice(marker.length));
+  if (typeof artifact.html !== "string" || artifact.html.length > 40000 || !artifact.html.trim())
+    throw Error("Invalid HTML artifact");
+  lines.splice(index, 1);
+  return { stdout: lines.join("\n"), artifact: artifact.html };
+}
 async function infer(messages) {
   const key = process.env.VULTR_INFERENCE_API_KEY, model = process.env.VULTR_MODEL;
   if (!key || !model) throw Error("Vultr Serverless Inference is not configured");
   const response = await fetch("https://api.vultrinference.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 1800 }),
+    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 2600 }),
     signal: AbortSignal.timeout(45000),
   });
   if (!response.ok) throw Error("Vultr inference returned " + response.status);
@@ -89,7 +100,7 @@ async function execute(run) {
   run.status = "running";
   save();
   try {
-    const system = "You are a product-building coding agent. Return ONLY JSON with plan (1-6 short steps) and code (Python 3.12 source). The code must do concrete, self-contained work and print verifiable output. Standard library only; no network or files. Do not claim execution happened.";
+    const system = "You are a product-building coding agent. Return ONLY JSON with plan (1-6 short steps) and code (Python 3.12 source). The code must do concrete, self-contained work and print verifiable output. For web page or UI tasks, build a single static HTML document with inline CSS, no external assets or scripts, and print one line starting FORGE_ARTIFACT: followed by JSON containing an html string. Print verification output on separate lines. Standard library only; no network or files. Do not claim execution happened.";
     let proposal = run.mode === "containment"
       ? { plan: ["Run an infinite loop inside an isolated container", "Verify the time limit stops it"], code: "while True: pass" }
       : parsePlan(await infer([{ role: "system", content: system }, { role: "user", content: run.task }]));
@@ -104,6 +115,11 @@ async function execute(run) {
         result: result.timedOut ? "Stopped at 12 seconds" : (result.stderr || result.stdout).slice(0, 500),
         completedAt: Date.now() });
       run.output = result;
+      if (result.exitCode === 0 && run.mode === "build") {
+        const parsed = parseArtifact(result.stdout);
+        run.output.stdout = parsed.stdout;
+        run.artifact = parsed.artifact;
+      }
       save();
       if (result.exitCode === 0 || run.mode === "containment" || attempt === 2) break;
       proposal = parsePlan(await infer([{ role: "system", content: system },
@@ -156,8 +172,8 @@ export function app() {
     if (request.method === "GET" && request.url === "/runs")
       return send(response, 200, runs.filter(run => run.ownerId === ownerId)
         .map(run => {
-          const { code, output, ...summary } = visibleRun(run);
-          void code; void output;
+          const { code, output, artifact, ...summary } = visibleRun(run);
+          void code; void output; void artifact;
           return summary;
         }));
     if (request.method === "GET" && /^\/runs\/[a-f0-9-]+$/.test(request.url)) {

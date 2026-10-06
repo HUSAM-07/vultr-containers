@@ -14,11 +14,11 @@ Checked 7 October 2026 against the [official hackathon page](https://lablab.ai/a
 
 | Requirement | This project |
 | --- | --- |
-| Web-based, product-style agent that performs real work | Forge frontend at `web/`; task, project, history, run inspector, source and execution receipts |
+| Web-based, product-style agent that performs real work | Forge frontend at `web/`; task, project, history, run inspector, static HTML preview, source and execution receipts |
 | Backend control and orchestration on a **Vultr VM** | `server/index.mjs` must be deployed on a Vultr VM; Vercel only serves the frontend and a thin proxy |
 | **All agent LLM calls** through Vultr Serverless Inference | Backend calls `https://api.vultrinference.com/v1/chat/completions`; no other model endpoint is active |
 | Code or browser actions in an isolated sandbox **on Vultr** | Docker container per code task on the Vultr VM, outside the Node app process |
-| Multi-step workflow with verifiable executed result | Model plan → generated code → container stdout/stderr → one repair retry on failure |
+| Multi-step workflow with verifiable executed result | Model plan → generated code → container stdout/stderr and optional HTML preview → one repair retry on failure |
 | Containment controls | Network disabled, read-only root, non-root user, dropped capabilities, CPU/memory/process limits, 12-second timeout, container removal |
 | Public demo and proof | **Pending deployment**: public Vercel URL, Vultr VM, recorded video, screenshot/receipt of containment run |
 
@@ -38,14 +38,14 @@ Vercel hosts the experience, but cannot replace the required Vultr control backe
 
 | Idea | Real executed result | Why it could compete |
 | --- | --- | --- |
-| **Forge product builder and manager** (selected) | Task-specific code, test output, retries, persistent run history | Reusable control layer with an explicit sandbox receipt |
+| **Forge product builder and manager** (selected) | Task-specific code, test output, static HTML previews, retries, persistent run history | Reusable control layer with an explicit sandbox receipt |
 | CSV repair studio | Cleaned dataset, before/after diff, validation log | Clear business value and easy proof |
 | Prove-It code reviewer | Executes a submitted repro or test suite | Strong contrast between claims and measured behavior |
 | Site QA sweep | Playwright screenshots, broken flow report | Visual demo, but needs browser sandbox and approval gate |
 | Chart Anything | Executed chart image plus source and data | Fast demo, but artifact handling is required |
 | Research with receipts | Screenshots tied to claims | Requires browser isolation and source validation |
 
-The selected first slice is code execution. Browser automation, artifact uploads, and external write actions can follow after the containment path is proven.
+The selected first slice is code execution with an optional static HTML preview emitted by the container. Browser automation, artifact uploads, and external write actions can follow after the containment path is proven.
 
 ## Services and infrastructure
 
@@ -68,7 +68,7 @@ The attached draft describes a much broader organization-scoped platform: Slack,
 - [x] Official free BoardUI components and Spectrum UI MCP project registration
 - [x] Vercel frontend, Vultr VM backend code, Vultr-only inference endpoint
 - [x] Isolated Docker command and a containment-demo flow
-- [x] Plan, sandbox guard, and visitor isolation checks; frontend production build
+- [x] Plan, sandbox guard, preview, and visitor isolation checks; frontend production build
 - [ ] Provision Vultr VM, HTTPS and server-only credentials; pull `python:3.12-alpine`
 - [ ] Exercise a real inference call and Docker run on that VM
 - [ ] Deploy Vercel frontend with `web` root and backend URL/token

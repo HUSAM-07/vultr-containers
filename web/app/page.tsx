@@ -22,11 +22,12 @@ type Run = {
   summary?: string;
   error?: string;
   code?: string;
+  artifact?: string;
   output?: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
 };
 
 const suggestions = [
-  "Build a simple pricing calculator for a subscription product and test three plans.",
+  "Build a static pricing page for a subscription product and verify three plan prices.",
   "Create a cohort retention analysis with sample data and print the results.",
   "Write and run a validator for a CSV product import with malformed rows.",
 ];
@@ -44,7 +45,7 @@ export default function Home() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
-  const [inspector, setInspector] = useState<"output" | "code">("output");
+  const [inspector, setInspector] = useState<"output" | "code" | "preview">("output");
 
   useEffect(() => {
     try {
@@ -202,7 +203,7 @@ export default function Home() {
           <div className="grid size-12 place-items-center rounded-2xl bg-background-primary-default"><RiCodeLine className="size-6 text-foreground-icon-primary" aria-hidden /></div>
           <div>
             <h2 className="text-title-2-medium">What should we build?</h2>
-            <p className="mt-2 text-body-regular text-text-secondary">Describe a product task. Forge plans, writes Python, runs it in an isolated container, and shows the actual result.</p>
+            <p className="mt-2 text-body-regular text-text-secondary">Describe a product task. Forge plans, writes Python, runs it in an isolated container, and shows the actual result. UI tasks can produce a static preview.</p>
           </div>
           <div className="flex flex-col gap-2">
             {suggestions.map(suggestion => <button key={suggestion} type="button" onClick={() => setTask(suggestion)}
@@ -246,9 +247,11 @@ export default function Home() {
       <div className="flex gap-2 border-b border-separator-border p-3">
         <Button variant={inspector === "output" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("output")}>Activity</Button>
         <Button variant={inspector === "code" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("code")}>Code</Button>
+        {current?.artifact && <Button variant={inspector === "preview" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("preview")}>Preview</Button>}
       </div>
       <div className="flex-1 overflow-auto p-5">
         {!current ? <div className="flex h-full flex-col justify-center gap-3 text-center"><RiShieldCheckLine className="mx-auto size-9 text-foreground-icon-tertiary" aria-hidden /><p className="text-body-medium">Every action has a receipt</p><p className="text-body-2-regular text-text-tertiary">Start a run to see sandbox steps, source, stdout, and stderr.</p></div>
+          : inspector === "preview" && current.artifact ? <iframe title="Generated product preview" sandbox="" referrerPolicy="no-referrer" className="h-full min-h-[420px] w-full rounded-xl border border-border-button-default bg-white" srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:">' + current.artifact} />
           : inspector === "code" ? <pre className="overflow-auto rounded-xl bg-background-secondary-default p-4 text-caption-1-regular text-text-primary whitespace-pre-wrap">{current.code || "Agent is writing code…"}</pre>
           : <div className="flex flex-col gap-6">
             <div><p className="mb-4 text-caption-1-semibold text-text-tertiary">AGENT STEPS</p><AgentSteps steps={current.steps} /></div>

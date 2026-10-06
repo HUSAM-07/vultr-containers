@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "forge-test-"));
 process.env.FORGE_DATA_FILE = join(dir, "runs.json");
-const { parsePlan, dockerArgs, app } = await import("./index.mjs");
+const { parsePlan, parseArtifact, dockerArgs, app } = await import("./index.mjs");
 test("validates plans and sets sandbox boundaries", () => {
   assert.deepEqual(parsePlan('{"plan":["run"],"code":"print(1)"}'), { plan: ["run"], code: "print(1)" });
   assert.throws(() => parsePlan('{"plan":[],"code":""}'));
@@ -16,13 +16,28 @@ test("validates plans and sets sandbox boundaries", () => {
   assert.equal(args.at(-1), "print(1)");
 });
 
-test("runs stay inside the signed visitor session", async () => {
+test("extracts a bounded preview from executed output", () => {
+  assert.deepEqual(parseArtifact('verified\nFORGE_ARTIFACT:{"html":"<h1>Ready</h1>"}\n'),
+    { stdout: "verified\n", artifact: "<h1>Ready</h1>" });
+  assert.deepEqual(parseArtifact("verified"), { stdout: "verified" });
+  assert.throws(() => parseArtifact('FORGE_ARTIFACT:{"html":""}'));
+});
+
+test("runs and previews stay inside the visitor session", async () => {
   const docker = join(dir, "docker");
-  writeFileSync(docker, "#!/bin/sh\nprintf 'mock sandbox\\n'\n");
+  writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' 'verified' 'FORGE_ARTIFACT:{\"html\":\"<h1>Ready</h1>\"}'\n");
   chmodSync(docker, 0o755);
   const oldPath = process.env.PATH;
   process.env.PATH = dir + ":" + oldPath;
   process.env.WEB_BACKEND_TOKEN = "test-token";
+  process.env.VULTR_INFERENCE_API_KEY = "test-key";
+  process.env.VULTR_MODEL = "test-model";
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = (input, options) => String(input).startsWith("https://api.vultrinference.com/")
+    ? Promise.resolve(new Response(JSON.stringify({ choices: [{ message: {
+      content: '{"plan":["build"],"code":"print(1)"}',
+    } }] }), { status: 200 }))
+    : nativeFetch(input, options);
   const server = app();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const url = "http://127.0.0.1:" + server.address().port;
@@ -45,9 +60,23 @@ test("runs stay inside the signed visitor session", async () => {
     assert.deepEqual(others, []);
     assert.equal((await request("/runs/" + run.id, b)).status, 404);
     assert.equal((await request("/runs", "")).status, 401);
+    const built = await (await request("/runs", a, { method: "POST",
+      body: JSON.stringify({ task: "Build a page" }) })).json();
+    let detail;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      detail = await (await request("/runs/" + built.id, a)).json();
+      if (detail.status === "succeeded" || detail.status === "failed") break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(detail.status, "succeeded");
+    assert.equal(detail.artifact, "<h1>Ready</h1>");
+    assert.equal(detail.output.stdout, "verified\n");
+    assert.equal((await (await request("/runs", a)).json())[0].artifact, undefined);
+    assert.equal((await request("/runs/" + built.id, b)).status, 404);
   } finally {
     await new Promise(resolve => server.close(resolve));
     process.env.PATH = oldPath;
+    globalThis.fetch = nativeFetch;
     rmSync(dir, { recursive: true, force: true });
   }
 });

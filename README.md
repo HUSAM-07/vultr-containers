@@ -1,6 +1,6 @@
 # Forge — Vultr Agent Rush
 
-Product task manager and sandboxed coding agent for the [Vultr: Agent Rush Hackathon](https://lablab.ai/ai-hackathons/vultr-hackathon). [Requirements and ideas](competition-constraints-and-requirements.md).
+Product task manager and sandboxed coding agent for the [Vultr: Agent Rush Hackathon](https://lablab.ai/ai-hackathons/vultr-hackathon). UI tasks can produce a static HTML preview from code executed inside the container. [Requirements and ideas](competition-constraints-and-requirements.md).
 
 ## Run locally
 
@@ -13,7 +13,7 @@ Requires Node 24+ and Docker. The backend only starts agent tasks when `VULTR_IN
 5. In another terminal: `cd web && npm install && npm run dev`.
 6. Open `http://localhost:3000`.
 
-`npm test` checks plan validation, Docker isolation flags, and visitor session isolation; `npm run build` builds the frontend.
+`npm test` checks plan validation, Docker isolation flags, visitor session isolation, and preview extraction; `npm run build` builds the frontend.
 
 ## Deploy
 
@@ -30,4 +30,4 @@ The public demo issues each browser a signed, HTTP-only session cookie and scope
 
 ## Current limits
 
-Runs are retained as JSON on one VM; interrupted runs are marked failed on restart. Project names are browser-local. No account system, file artifacts, browser automation, or external write approvals yet. The attached ADLC specification covers those later phases.
+Runs and inline HTML previews are retained as JSON on one VM; interrupted runs are marked failed on restart. Project names are browser-local. No account system, downloadable artifact files, browser automation, or external write approvals yet. Generated previews have scripts, network requests, and forms blocked by iframe sandbox and CSP. The attached ADLC specification covers those later phases.
