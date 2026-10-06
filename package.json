@@ -1,0 +1,11 @@
+{
+  "name": "vultr-agent-rush",
+  "private": true,
+  "scripts": {
+    "test": "node --test server/index.test.mjs",
+    "dev:web": "npm --prefix web run dev",
+    "dev:api": "node server/index.mjs",
+    "build": "npm --prefix web run build"
+  },
+  "license": "MIT"
+}
