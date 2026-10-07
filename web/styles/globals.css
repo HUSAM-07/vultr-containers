@@ -104,11 +104,6 @@ body {
   color: var(--color-text-primary);
 }
 
-:root:not(.dark) .forge-reference {
-  --color-background-secondary-default: color-mix(in srgb, var(--color-neutral-100) 75%, var(--color-white));
-  --color-background-tertiary-default: color-mix(in srgb, var(--color-neutral-200) 80%, var(--color-white));
-}
-
 :root:not(.dark) .forge-reference .reference-selected-tab {
   background-color: color-mix(in srgb, var(--color-blue-50) 80%, var(--color-white));
 }
