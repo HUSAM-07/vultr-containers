@@ -109,6 +109,10 @@ body {
   --color-background-tertiary-default: color-mix(in srgb, var(--color-neutral-200) 80%, var(--color-white));
 }
 
+:root:not(.dark) .forge-reference .reference-selected-tab {
+  background-color: color-mix(in srgb, var(--color-blue-50) 80%, var(--color-white));
+}
+
 /* Theme-aware monochrome BoardUI mark. Both images keep their intrinsic
  * dimensions while the root theme class decides which one participates in
  * layout, avoiding a light-logo flash during hydration. */
