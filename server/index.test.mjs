@@ -32,11 +32,13 @@ test("runs and previews stay inside the visitor session", async () => {
   process.env.WEB_BACKEND_TOKEN = "test-token";
   process.env.VULTR_INFERENCE_API_KEY = "test-key";
   process.env.VULTR_MODEL = "test-model";
+  const inferenceRequests = [];
   const nativeFetch = globalThis.fetch;
-  globalThis.fetch = (input, options) => String(input).startsWith("https://api.vultrinference.com/")
-    ? Promise.resolve(new Response(JSON.stringify({ choices: [{ message: {
+  globalThis.fetch = (input, options) => String(input).includes("/chat/completions")
+    ? (inferenceRequests.push({ url: String(input), body: JSON.parse(options.body) }),
+      Promise.resolve(new Response(JSON.stringify({ choices: [{ message: {
       content: '{"plan":["build"],"code":"print(1)"}',
-    } }] }), { status: 200 }))
+    } }] }), { status: 200 })))
     : nativeFetch(input, options);
   const server = app();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -73,10 +75,26 @@ test("runs and previews stay inside the visitor session", async () => {
     assert.equal(detail.output.stdout, "verified\n");
     assert.equal((await (await request("/runs", a)).json())[0].artifact, undefined);
     assert.equal((await request("/runs/" + built.id, b)).status, 404);
+    assert.equal(inferenceRequests[0].url, "https://api.vultrinference.com/v1/chat/completions");
+    process.env.INFERENCE_PROVIDER = "openrouter";
+    process.env.OPENROUTER_API_KEY = "test-openrouter-key";
+    assert.equal((await (await request("/health", a)).json()).provider, "OpenRouter · GPT-6 Luna");
+    const routed = await (await request("/runs", a, { method: "POST",
+      body: JSON.stringify({ task: "Build another page" }) })).json();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      detail = await (await request("/runs/" + routed.id, a)).json();
+      if (detail.status === "succeeded" || detail.status === "failed") break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(detail.status, "succeeded");
+    assert.equal(inferenceRequests.at(-1).url, "https://openrouter.ai/api/v1/chat/completions");
+    assert.equal(inferenceRequests.at(-1).body.model, "openai/gpt-6-luna");
   } finally {
     await new Promise(resolve => server.close(resolve));
     process.env.PATH = oldPath;
     globalThis.fetch = nativeFetch;
+    delete process.env.INFERENCE_PROVIDER;
+    delete process.env.OPENROUTER_API_KEY;
     rmSync(dir, { recursive: true, force: true });
   }
 });

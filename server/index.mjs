@@ -45,17 +45,21 @@ export function parseArtifact(stdout) {
   return { stdout: lines.join("\n"), artifact: artifact.html };
 }
 async function infer(messages) {
-  const key = process.env.VULTR_INFERENCE_API_KEY, model = process.env.VULTR_MODEL;
-  if (!key || !model) throw Error("Vultr Serverless Inference is not configured");
-  const response = await fetch("https://api.vultrinference.com/v1/chat/completions", {
+  const openrouter = process.env.INFERENCE_PROVIDER === "openrouter";
+  const key = openrouter ? process.env.OPENROUTER_API_KEY : process.env.VULTR_INFERENCE_API_KEY;
+  const model = openrouter ? "openai/gpt-6-luna" : process.env.VULTR_MODEL;
+  if (!key || !model) throw Error((openrouter ? "OpenRouter" : "Vultr Serverless Inference") + " is not configured");
+  const response = await fetch(openrouter
+    ? "https://openrouter.ai/api/v1/chat/completions"
+    : "https://api.vultrinference.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
     body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 2600 }),
     signal: AbortSignal.timeout(45000),
   });
-  if (!response.ok) throw Error("Vultr inference returned " + response.status);
+  if (!response.ok) throw Error("Inference returned " + response.status);
   const value = (await response.json()).choices?.[0]?.message?.content;
-  if (typeof value !== "string") throw Error("Vultr inference returned no text");
+  if (typeof value !== "string") throw Error("Inference returned no text");
   return value;
 }
 export function dockerArgs(name, code) {
@@ -130,7 +134,7 @@ async function execute(run) {
     run.summary = run.mode === "containment" && run.output.timedOut
       ? "Containment verified: the loop was stopped inside a network-disabled, resource-limited container."
       : run.status === "succeeded"
-        ? "Executed successfully in the Vultr-hosted sandbox. Review source and output."
+        ? "Executed successfully in the isolated sandbox. Review source and output."
         : "Execution failed. Review stderr and generated source.";
   } catch (error) {
     run.status = "failed";
@@ -161,8 +165,11 @@ function visibleRun(run) {
 export function app() {
   return createServer(async (request, response) => {
     if (request.url === "/health") return send(response, 200, { ok: true,
-      configured: Boolean(process.env.VULTR_INFERENCE_API_KEY && process.env.VULTR_MODEL),
-      sandbox: "Docker on Vultr VM" });
+      configured: process.env.INFERENCE_PROVIDER === "openrouter"
+        ? Boolean(process.env.OPENROUTER_API_KEY)
+        : Boolean(process.env.VULTR_INFERENCE_API_KEY && process.env.VULTR_MODEL),
+      provider: process.env.INFERENCE_PROVIDER === "openrouter" ? "OpenRouter · GPT-6 Luna" : "Vultr Serverless Inference",
+      sandbox: "Docker" });
     if (!process.env.WEB_BACKEND_TOKEN ||
         request.headers.authorization !== "Bearer " + process.env.WEB_BACKEND_TOKEN)
       return send(response, 401, { error: "Unauthorized" });

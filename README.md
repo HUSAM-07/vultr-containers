@@ -4,20 +4,20 @@ Product task manager and sandboxed coding agent for the [Vultr: Agent Rush Hacka
 
 ## Run locally
 
-Requires Node 24+ and Docker. The backend only starts agent tasks when `VULTR_INFERENCE_API_KEY` and `VULTR_MODEL` are set. The containment demo does not call a model.
+Requires Node 24+ and Docker for executing agent code. The containment demo does not call a model.
 
-1. Copy `server/.env.example` to `server/.env`, set a long random `WEB_BACKEND_TOKEN`, and set Vultr inference credentials.
+1. Copy `server/.env.example` to `server/.env` and set a long random `WEB_BACKEND_TOKEN`. For local model development, set `INFERENCE_PROVIDER=openrouter` and `OPENROUTER_API_KEY`; this uses `openai/gpt-6-luna`. For a competition-ready run, leave `INFERENCE_PROVIDER` unset and set `VULTR_INFERENCE_API_KEY` and `VULTR_MODEL`.
 2. Copy `web/.env.example` to `web/.env.local`; use the same token as `VULTR_BACKEND_TOKEN`.
 3. Pull the sandbox image: `docker pull python:3.12-alpine`.
 4. Start the backend: `set -a; source server/.env; set +a; npm run dev:api`.
 5. In another terminal: `cd web && npm install && npm run dev`.
 6. Open `http://localhost:3000`.
 
-`npm test` checks plan validation, Docker isolation flags, visitor session isolation, and preview extraction; `npm run build` builds the frontend.
+`npm test` checks plan validation, Docker isolation flags, both inference routes, visitor session isolation, and preview extraction; `npm run build` builds the frontend. The opening conversation and repository names are visual examples until a real task is selected.
 
 ## Deploy
 
-**Vultr VM:** Install Node 24+ and Docker, create a non-root application user, pre-pull `python:3.12-alpine`, provide the server environment variables through a protected service environment, and run `node server/index.mjs` behind HTTPS. Allow incoming traffic only to the reverse proxy. Restrict access to Docker; its socket is host-powerful. Keep `server/data/` on persistent storage and back it up, or set `FORGE_DATA_FILE` to another persistent path. This single-process JSON store is a hackathon ceiling; use Convex and a durable queue before multi-tenant production.
+**Vultr VM:** Install Node 24+ and Docker, create a non-root application user, pre-pull `python:3.12-alpine`, provide the server environment variables through a protected service environment, and run `node server/index.mjs` behind HTTPS. **Leave `INFERENCE_PROVIDER` unset** so every agent model call uses Vultr Serverless Inference, as the hackathon requires. Allow incoming traffic only to the reverse proxy. Restrict access to Docker; its socket is host-powerful. Keep `server/data/` on persistent storage and back it up, or set `FORGE_DATA_FILE` to another persistent path. This single-process JSON store is a hackathon ceiling; use Convex and a durable queue before multi-tenant production.
 
 **Vercel:** Import the GitHub repository with **Root Directory = `web`**. Set `VULTR_BACKEND_URL` to the VM's HTTPS API origin and `VULTR_BACKEND_TOKEN` to the same backend secret. These variables are server-only. Vercel serves the UI and forwards API requests; all agent model calls and sandbox execution remain on Vultr. Publish the Vercel URL as the demo application URL.
 
@@ -25,7 +25,7 @@ The public demo issues each browser a signed, HTTP-only session cookie and scope
 
 ## UI provenance
 
-- [BoardUI](https://www.boardui.com/components) free button, input, textarea, and agent-thinking components with its semantic theme, installed with the official CLI. The layout follows the public [AI Chat preview](https://www.boardui.com/templates/ai-chat) without using Pro source.
+- [BoardUI](https://www.boardui.com/components) free button, input, textarea, and agent-thinking components with its semantic theme, installed with the official CLI. The three-region layout recreates the supplied [AI Chat reference](https://www.boardui.com/templates/ai-chat) using free components; it does not include Pro source.
 - [Spectrum UI Agent Steps](https://ui.spectrumhq.in/blocks/ai-assistants#agent-steps) adapted to the BoardUI theme; project MCP configuration is in `.mcp.json`. The adapted component retains Apache 2.0 attribution.
 
 ## Current limits

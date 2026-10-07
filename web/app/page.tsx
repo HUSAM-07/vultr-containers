@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { RiAddLine, RiArrowUpLine, RiCodeLine, RiFolder3Line, RiRefreshLine, RiShieldCheckLine } from "@remixicon/react";
+import {
+  RiAddLine, RiArrowDownSLine, RiArrowRightSLine, RiArrowUpLine, RiCodeLine,
+  RiFileCopyLine, RiFolder3Line, RiFolderOpenLine, RiGitBranchLine, RiGlobalLine,
+  RiHeadphoneLine, RiLayoutRightLine, RiMenuLine, RiMicLine, RiMoonLine,
+  RiMoreLine, RiRobot2Line, RiSearchLine, RiSettings3Line, RiShareLine,
+  RiShieldCheckLine, RiSunLine, RiThumbDownLine, RiThumbUpLine,
+} from "@remixicon/react";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { Textarea } from "@/components/base/textarea/textarea";
@@ -10,59 +16,97 @@ import { AgentSteps, type Step } from "@/components/spectrum/agent-steps";
 import { cx } from "@/utils/cx";
 
 type Run = {
-  id: string;
-  task: string;
-  project: string;
-  mode: "build" | "containment";
+  id: string; task: string; project: string; mode: "build" | "containment";
   status: "queued" | "running" | "succeeded" | "failed";
-  plan: string[];
-  steps: Step[];
-  createdAt: number;
-  completedAt?: number;
-  summary?: string;
-  error?: string;
-  code?: string;
-  artifact?: string;
+  plan: string[]; steps: Step[]; createdAt: number; summary?: string; error?: string;
+  code?: string; artifact?: string;
   output?: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean };
 };
-
-const suggestions = [
-  "Build a static pricing page for a subscription product and verify three plan prices.",
-  "Create a cohort retention analysis with sample data and print the results.",
-  "Write and run a validator for a CSV product import with malformed rows.",
+const homeProject = "vibl coding project";
+const starterProjects = ["boardui", homeProject, "strider landing page work", "pirate mini game iOS"];
+const examples = [
+  { name: "landing page design", time: "34m" }, { name: "image generation", time: "now" },
+  { name: "coding scenario", time: "now" }, { name: "mobile app for yueis...", time: "5h" },
+  { name: "code refactor dropd...", time: "18h" },
 ];
+const examplePrompt = "update our color tokens for dark mode and add a reusable theme toggle to the registry. run lint and a production build when you're done.";
+const exampleReply = "Done — the semantic dark-mode tokens and reusable theme toggle are wired. The toggle updates the root theme from one place and persists the selection:";
+const exampleCode = `const nextTheme = theme === "dark" ? "light" : "dark";
+document.documentElement.classList.toggle(
+  "dark",
+  nextTheme === "dark",
+);
+localStorage.setItem("boardui:theme", nextTheme);`;
+const exampleSideCode = `import type { Metadata } from "next";
+import Link from "next/link";
+import { ComponentDetail } from
+  "@/components/application/docs/component-detail";
+import { DashboardShell } from
+  "@/components/application/dashboard/dashboard-shell";
+
+export const metadata: Metadata = {
+  title: "Home Dashboard Template — React + Tailwind (Pro)",
+  description:
+    "Full admin dashboard template for React + Tailwind CSS — sidebar navigation, KPI cards, bar chart, and a customers data table. A BoardUI Pro template.",
+};
+
+const PREVIEW_CODE = "import { DashboardShell } from ...";
+
+export default function HomeDashboardDetail() {
+  return (
+    <ComponentDetail
+      title="Home Dashboard"
+      preview={<DashboardShell />}
+    />
+  );
+}`;
+const suggestions = ["Build a static pricing page for three plans and verify the prices.", "Create a cohort retention analysis with sample data.", "Validate a CSV product import with malformed rows."];
+
+function CodeLines({ code, limit = 120 }: { code: string; limit?: number }) {
+  return <div className="min-w-0 overflow-auto font-mono text-caption-1-regular leading-6">
+    {code.split("\n").slice(0, limit).map((line, index) => <div key={index} className="flex min-h-6">
+      <span className="w-9 shrink-0 select-none pe-3 text-end text-text-tertiary">{index + 1}</span>
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-words text-text-secondary">{line.split(/(\b(?:import|from|export|const|return|function|type|let|if|else|default)\b|"[^\"]*"|'[^']*')/g).map((part, i) => <span key={i} className={/^(import|from|export|const|return|function|type|let|if|else|default)$/.test(part) ? "text-notification-success-foreground" : /^['"]/.test(part) ? "text-text-tertiary" : ""}>{part}</span>)}</code>
+    </div>)}
+  </div>;
+}
 
 export default function Home() {
-  const [projects, setProjects] = useState(["General"]);
+  const [projects, setProjects] = useState(starterProjects);
   const [restored, setRestored] = useState(false);
-  const [project, setProject] = useState("General");
+  const [project, setProject] = useState(homeProject);
   const [newProject, setNewProject] = useState("");
   const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState("");
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selected, setSelected] = useState<Run | null>(null);
+  const [example, setExample] = useState("coding scenario");
   const [task, setTask] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
-  const [inspector, setInspector] = useState<"output" | "code" | "preview">("output");
+  const [provider, setProvider] = useState("Vultr Serverless Inference");
+  const [panel, setPanel] = useState<"changes" | "browser">("changes");
+  const [dark, setDark] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("forge:projects") || "[]");
       if (Array.isArray(saved) && saved.every(item => typeof item === "string"))
         // eslint-disable-next-line react-hooks/set-state-in-effect -- restore browser state after hydration
-        setProjects(["General", ...saved.filter(item => item !== "General")]);
-    } catch { /* local storage may be unavailable */ }
+        setProjects([...starterProjects, ...saved.filter(item => !starterProjects.includes(item))]);
+      const isDark = localStorage.getItem("forge:dark") === "true";
+      setDark(isDark);
+      document.documentElement.classList.toggle("dark", isDark);
+    } catch { /* optional browser storage */ }
     setRestored(true);
   }, []);
   useEffect(() => {
-    if (restored) {
-      try { localStorage.setItem("forge:projects", JSON.stringify(projects)); }
-      catch { /* local storage may be unavailable */ }
-    }
+    if (restored) try { localStorage.setItem("forge:projects", JSON.stringify(projects)); } catch { /* optional */ }
   }, [projects, restored]);
-
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/backend/runs", { cache: "no-store" });
@@ -77,193 +121,100 @@ export default function Home() {
     } catch (cause) { setError((cause as Error).message); }
   }, []);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh updates state only after the HTTP response
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh updates state after HTTP response
     void refresh();
-    fetch("/api/backend/health").then(response => response.json())
-      .then(value => setConfigured(Boolean(value.configured)))
-      .catch(() => setConfigured(false));
+    fetch("/api/backend/health").then(response => response.json()).then(value => {
+      setConfigured(Boolean(value.configured));
+      if (typeof value.provider === "string") setProvider(value.provider);
+    }).catch(() => setConfigured(false));
   }, [refresh]);
-  const hasActiveRuns = runs.some(run => run.status === "running" || run.status === "queued");
-  useEffect(() => {
-    if (!hasActiveRuns) return;
-    const timer = setInterval(refresh, 3000);
-    return () => clearInterval(timer);
-  }, [hasActiveRuns, refresh]);
-  const pollSelected = selected?.id !== selectedId || selected?.status === "running" || selected?.status === "queued";
+  const hasActive = runs.some(run => run.status === "running" || run.status === "queued");
+  useEffect(() => { if (hasActive) { const timer = setInterval(refresh, 3000); return () => clearInterval(timer); } }, [hasActive, refresh]);
+  const poll = selected?.id !== selectedId || selected?.status === "running" || selected?.status === "queued";
   useEffect(() => {
     if (!selectedId) return;
     let cancelled = false;
     const load = async () => {
-      try {
-        const response = await fetch("/api/backend/runs/" + selectedId, { cache: "no-store" });
-        if (response.ok) {
-          const value = await response.json();
-          if (!cancelled) setSelected(value);
-        }
-      } catch { /* next poll retries */ }
+      try { const response = await fetch("/api/backend/runs/" + selectedId, { cache: "no-store" }); if (response.ok && !cancelled) setSelected(await response.json()); }
+      catch { /* next poll retries */ }
     };
     void load();
-    if (!pollSelected) return () => { cancelled = true; };
+    if (!poll) return () => { cancelled = true; };
     const timer = setInterval(load, 2000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [selectedId, pollSelected]);
+  }, [selectedId, poll]);
 
   async function submit(mode: "build" | "containment" = "build") {
     if (pending || (!task.trim() && mode === "build")) return;
-    setPending(true);
-    setError("");
+    setPending(true); setError("");
     try {
-      const response = await fetch("/api/backend/runs", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, task: mode === "containment" ? "Demonstrate sandbox time limit" : task.trim(), mode }),
-      });
+      const response = await fetch("/api/backend/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project, task: mode === "containment" ? "Demonstrate sandbox time limit" : task.trim(), mode }) });
       const value = await response.json();
       if (!response.ok) throw Error(value.error || "Run could not start");
-      setSelected(value);
-      setSelectedId(value.id);
-      setTask("");
-      void refresh();
-    } catch (cause) { setError((cause as Error).message); }
-    finally { setPending(false); }
+      setSelected(value); setSelectedId(value.id); setExample(""); setTask(""); void refresh();
+    } catch (cause) { setError((cause as Error).message); } finally { setPending(false); }
   }
-
   function addProject() {
-    const name = newProject.trim();
-    if (!name || name.length > 80) return;
+    const name = newProject.trim(); if (!name || name.length > 80) return;
     setProjects(current => current.includes(name) ? current : [...current, name]);
-    setProject(name);
-    setNewProject("");
-    setAdding(false);
-    setSelectedId("");
-    setSelected(null);
+    setProject(name); setNewProject(""); setAdding(false); setSelectedId(""); setSelected(null); setExample("");
   }
+  function newAgent() { setSelectedId(""); setSelected(null); setExample(""); setTask(""); setSidebarOpen(false); }
+  function pickProject(name: string) { setProject(name); setSelectedId(""); setSelected(null); setExample(name === homeProject ? "coding scenario" : ""); setSidebarOpen(false); }
+  function toggleTheme(value: boolean) { setDark(value); document.documentElement.classList.toggle("dark", value); try { localStorage.setItem("forge:dark", String(value)); } catch { /* optional */ } }
 
-  const projectRuns = runs.filter(run => run.project === project);
   const current = selected?.project === project ? selected : null;
-  return <main className="flex min-h-dvh flex-col gap-3 bg-background-full p-3 text-text-primary lg:h-dvh lg:flex-row">
-    <aside className="flex w-full shrink-0 flex-col rounded-3xl border border-border-button-default bg-background-primary-default p-4 lg:w-64">
-      <div className="flex items-center gap-3 pb-6">
-        <span className="grid size-9 place-items-center rounded-xl bg-button-primary text-text-white"><RiCodeLine className="size-5" aria-hidden /></span>
-        <div className="min-w-0">
-          <p className="text-headline-medium">Forge</p>
-          <p className="text-caption-1-regular text-text-tertiary">Vultr Agent Rush</p>
-        </div>
-      </div>
-      <Button variant="secondary" leadingIcon={RiAddLine} onClick={() => { setSelectedId(""); setSelected(null); setTask(""); }}>
-        New run
-      </Button>
-      <div className="mt-8 flex items-center justify-between">
-        <span className="text-caption-1-semibold text-text-tertiary">PROJECTS</span>
-        <Button variant="ghost" size="xs" iconOnly leadingIcon={RiAddLine} aria-label="Add project" onClick={() => setAdding(value => !value)} />
-      </div>
-      {adding && <form className="mt-2 flex gap-1" onSubmit={event => { event.preventDefault(); addProject(); }}>
-        <Input aria-label="Project name" placeholder="Project name" value={newProject} onChange={setNewProject} maxLength={80} />
-        <Button type="submit" size="small" iconOnly leadingIcon={RiArrowUpLine} aria-label="Save project" />
-      </form>}
-      <nav className="mt-3 flex flex-col gap-1" aria-label="Projects">
-        {projects.map(name => <button key={name} type="button" onClick={() => { setProject(name); setSelectedId(""); setSelected(null); }}
-          className={cx("flex items-center gap-2 rounded-xl px-3 py-2 text-start text-body-medium transition-colors hover:bg-background-secondary-hover",
-            name === project ? "bg-background-secondary-default text-text-primary" : "text-text-secondary")}>
-          <RiFolder3Line className="size-4 shrink-0 text-foreground-icon-secondary" aria-hidden />
-          <span className="truncate">{name}</span>
-        </button>)}
+  const showExample = !selectedId && project === homeProject && Boolean(example);
+  const projectRuns = runs.filter(run => run.project === project);
+  const query = search.toLowerCase().trim();
+  const additions = current?.code?.split("\n").length || 0;
+  return <main className="grid h-dvh min-h-[620px] grid-cols-[264px_minmax(0,1fr)_424px] gap-3 overflow-hidden bg-background-full p-2 text-text-primary max-xl:grid-cols-[244px_minmax(0,1fr)_360px] max-lg:grid-cols-1 max-sm:min-h-dvh max-sm:p-0">
+    <aside className={cx("flex min-h-0 flex-col rounded-3xl border border-border-button-default bg-background-secondary-default px-3 py-3 shadow-sidebar max-lg:fixed max-lg:inset-y-2 max-lg:left-2 max-lg:z-30 max-lg:w-64", sidebarOpen ? "max-lg:flex" : "max-lg:hidden")}>
+      <div className="flex h-10 items-center gap-2 px-1"><span className="grid size-8 shrink-0 place-items-center rounded-full bg-background-tertiary-default text-body-medium text-text-secondary">M</span><span className="min-w-0 flex-1 truncate text-body-medium">Mertcan Esmergul</span><RiArrowDownSLine className="size-4 text-foreground-icon-tertiary" aria-hidden /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiLayoutRightLine} aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} /></div>
+      <div className="mt-1 px-0.5"><Input aria-label="Quick Search" placeholder="Quick Search" value={search} onChange={setSearch} leadingIcon={RiSearchLine} size="small" fieldClassName="!rounded-full !bg-background-tertiary-default !border-0 !shadow-none" /></div>
+      <nav className="mt-4 flex flex-col gap-1" aria-label="Workspace">
+        <button type="button" onClick={newAgent} className="flex h-9 items-center gap-3 rounded-lg px-2 text-body-regular text-text-secondary hover:bg-background-secondary-hover"><RiAddLine className="size-[18px]" aria-hidden />New agent</button>
+        <button type="button" disabled title="Automations are not available in this preview" className="flex h-9 items-center gap-3 rounded-lg px-2 text-body-regular text-text-secondary"><RiRobot2Line className="size-[18px]" aria-hidden />Automations</button>
+        <button type="button" onClick={() => toggleTheme(!dark)} className="flex h-9 items-center gap-3 rounded-lg px-2 text-body-regular text-text-secondary hover:bg-background-secondary-hover"><RiSettings3Line className="size-[18px]" aria-hidden />Customize</button>
       </nav>
-      <div className="mt-8 flex items-center justify-between">
-        <span className="text-caption-1-semibold text-text-tertiary">RECENT RUNS</span>
-        <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh runs" onClick={() => void refresh()} />
-      </div>
-      <div className="mt-3 flex flex-col gap-1 overflow-auto">
-        {projectRuns.length ? projectRuns.map(run => <button key={run.id} type="button" onClick={() => { setSelectedId(run.id); setSelected(null); }}
-          className={cx("rounded-xl px-3 py-2 text-start transition-colors hover:bg-background-secondary-hover",
-            selectedId === run.id && "bg-background-secondary-default")}>
-          <span className="block truncate text-body-2-medium text-text-primary">{run.task}</span>
-          <span className="text-caption-1-regular text-text-tertiary">{run.status} · {new Date(run.createdAt).toLocaleTimeString()}</span>
-        </button>) : <p className="px-3 py-2 text-body-2-regular text-text-tertiary">No runs yet</p>}
-      </div>
-      <div className="mt-auto border-t border-separator-border pt-4">
-        <div className="flex items-center gap-2 text-body-2-medium text-text-secondary">
-          <RiShieldCheckLine className="size-4 text-foreground-icon-secondary" aria-hidden />
-          Isolated execution on Vultr
-        </div>
+      <div className="mt-6 flex items-center justify-between px-1 text-body-regular text-text-secondary"><span>Repositories</span><Button variant="ghost" size="xs" iconOnly leadingIcon={RiAddLine} aria-label="Add repository" onClick={() => setAdding(value => !value)} /></div>
+      {adding && <form className="mt-2 flex gap-1" onSubmit={event => { event.preventDefault(); addProject(); }}><Input aria-label="Repository name" placeholder="Repository name" value={newProject} onChange={setNewProject} maxLength={80} size="small" /><Button type="submit" size="small" iconOnly leadingIcon={RiArrowUpLine} aria-label="Save repository" /></form>}
+      <nav className="mt-2 flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label="Repositories">
+        {projects.filter(name => !query || name.toLowerCase().includes(query) || (name === homeProject && examples.some(thread => thread.name.includes(query))) || runs.some(run => run.project === name && run.task.toLowerCase().includes(query))).map(name => <div key={name}>
+          <button type="button" onClick={() => pickProject(name)} className={cx("flex h-10 w-full items-center gap-2 rounded-lg px-2 text-start text-body-regular text-text-secondary hover:bg-background-secondary-hover", project === name && "text-text-primary")}>{project === name ? <RiFolderOpenLine className="size-[18px] shrink-0" aria-hidden /> : <RiFolder3Line className="size-[18px] shrink-0" aria-hidden />}<span className="truncate">{name}</span></button>
+          {project === name && <div className="ms-4 border-s border-separator-border ps-1">
+            {name === homeProject && examples.filter(thread => !query || thread.name.includes(query)).map(thread => <button key={thread.name} type="button" onClick={() => { setSelectedId(""); setSelected(null); setExample(thread.name); setSidebarOpen(false); }} className={cx("flex h-8 w-full items-center gap-2 rounded-lg px-2 text-start text-body-regular text-text-secondary hover:bg-background-secondary-hover", example === thread.name && !selectedId && "bg-background-tertiary-default")}><span className="min-w-0 flex-1 truncate">{thread.name}</span><span className="rounded bg-background-tertiary-default px-1 text-caption-1-regular text-text-tertiary">{thread.time}</span></button>)}
+            {projectRuns.filter(run => !query || run.task.toLowerCase().includes(query)).map(run => <button key={run.id} type="button" onClick={() => { setSelectedId(run.id); setSelected(null); setExample(""); setSidebarOpen(false); }} className={cx("flex h-8 w-full items-center gap-2 rounded-lg px-2 text-start text-body-regular text-text-secondary hover:bg-background-secondary-hover", selectedId === run.id && "bg-background-tertiary-default")}><span className="min-w-0 flex-1 truncate">{run.task}</span><span className="text-caption-1-regular text-text-tertiary">{run.status === "running" ? "now" : "run"}</span></button>)}
+          </div>}
+        </div>)}
+      </nav>
+      <div className="mt-3 flex flex-col gap-1"><div className="mb-2 flex w-fit items-center gap-1 rounded-full bg-background-tertiary-default p-1"><Button variant="ghost" size="xs" iconOnly leadingIcon={RiSunLine} aria-label="Light theme" aria-pressed={!dark} onClick={() => toggleTheme(false)} className={cx("!rounded-full", !dark && "!bg-background-primary-default !shadow-xs")} /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiMoonLine} aria-label="Dark theme" aria-pressed={dark} onClick={() => toggleTheme(true)} className={cx("!rounded-full", dark && "!bg-background-primary-default !shadow-xs")} /></div>
+        <a href="https://github.com/HUSAM-07/vultr-containers" target="_blank" rel="noreferrer" className="flex h-9 items-center gap-3 rounded-lg px-2 text-body-regular text-text-secondary hover:bg-background-secondary-hover"><RiHeadphoneLine className="size-[18px]" aria-hidden />Support</a>
+        <button type="button" onClick={() => toggleTheme(!dark)} className="flex h-9 items-center gap-3 rounded-lg px-2 text-body-regular text-text-secondary hover:bg-background-secondary-hover"><RiSettings3Line className="size-[18px]" aria-hidden />Settings</button>
+        <div className="mt-2 flex items-center gap-2 rounded-xl bg-background-tertiary-default p-2"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-accent-200 text-body-medium text-accent-700">B</span><div className="min-w-0 flex-1"><p className="truncate text-body-medium">Board team</p><p className="text-caption-1-regular text-text-tertiary">Pro Plan</p></div><a href="https://github.com/HUSAM-07/vultr-containers" target="_blank" rel="noreferrer" className="rounded-lg bg-background-primary-default px-3 py-1.5 text-body-medium shadow-xs">Docs</a></div>
       </div>
     </aside>
 
-    <section className="flex min-h-[620px] min-w-0 flex-1 flex-col rounded-3xl border border-border-button-default bg-background-secondary-default lg:min-h-0">
-      <header className="flex items-center justify-between border-b border-separator-border px-6 py-4">
-        <div>
-          <p className="text-caption-1-regular text-text-tertiary">Project / {project}</p>
-          <h1 className="text-headline-medium">Product builder</h1>
-        </div>
-        <span className="rounded-full bg-background-primary-default px-3 py-1 text-caption-1-semibold text-text-secondary">
-          {configured === null ? "Checking Vultr" : configured ? "Vultr ready" : "Setup needed"}
-        </span>
-      </header>
-      <div className="flex-1 overflow-y-auto p-6">
-        {!current ? <div className="mx-auto flex h-full max-w-xl flex-col justify-center gap-5">
-          <div className="grid size-12 place-items-center rounded-2xl bg-background-primary-default"><RiCodeLine className="size-6 text-foreground-icon-primary" aria-hidden /></div>
-          <div>
-            <h2 className="text-title-2-medium">What should we build?</h2>
-            <p className="mt-2 text-body-regular text-text-secondary">Describe a product task. Forge plans, writes Python, runs it in an isolated container, and shows the actual result. UI tasks can produce a static preview.</p>
-          </div>
-          <div className="flex flex-col gap-2">
-            {suggestions.map(suggestion => <button key={suggestion} type="button" onClick={() => setTask(suggestion)}
-              className="rounded-xl border border-border-button-default bg-background-primary-default p-3 text-start text-body-2-medium text-text-secondary transition-colors hover:bg-background-secondary-hover">
-              {suggestion}
-            </button>)}
-          </div>
-        </div> : <div className="mx-auto flex max-w-2xl flex-col gap-6">
-          <div className="ms-auto max-w-[85%] rounded-2xl bg-background-primary-default p-4 text-body-regular">{current.task}</div>
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-lg bg-button-primary text-text-white"><RiCodeLine className="size-4" aria-hidden /></span><span className="text-body-medium">Forge agent</span></div>
-            {current.status === "running" || current.status === "queued" ? <AgentThinking variant="wave" label="Working on Vultr" /> : null}
-            {current.plan.length > 0 && <div className="rounded-3xl border border-border-button-default bg-background-primary-default p-5">
-              <h3 className="text-body-medium">Execution plan</h3>
-              <ol className="mt-3 flex flex-col gap-2">
-                {current.plan.map((step, index) => <li key={index} className="flex gap-3 text-body-2-regular text-text-secondary"><span className="text-text-tertiary">{String(index + 1).padStart(2, "0")}</span>{step}</li>)}
-              </ol>
-            </div>}
-            {(current.summary || current.error) && <p className="text-body-regular text-text-secondary">{current.summary || current.error}</p>}
-            {current.output && <pre className="max-h-64 overflow-auto rounded-2xl border border-border-button-default bg-background-primary-default p-4 text-caption-1-regular text-text-primary whitespace-pre-wrap">{current.output.stdout || current.output.stderr || "(no output)"}</pre>}
-          </div>
-        </div>}
+    <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-3xl bg-background-secondary-default max-sm:rounded-none">
+      <header className="flex h-14 shrink-0 items-center justify-between px-5"><div className="flex min-w-0 items-center gap-2 text-body-regular text-text-secondary"><Button variant="ghost" size="xs" iconOnly leadingIcon={RiMenuLine} aria-label="Open sidebar" onClick={() => setSidebarOpen(true)} className="lg:!hidden" /><RiFolder3Line className="size-4 shrink-0 text-foreground-icon-tertiary" aria-hidden /><span className="truncate text-text-tertiary">{project}</span><RiArrowRightSLine className="size-4 shrink-0" aria-hidden /><span className="truncate">{current?.task || example || "New agent"}</span></div><div className="flex items-center gap-1"><Button variant="ghost" size="xs" iconOnly leadingIcon={RiShareLine} aria-label="Copy page link" onClick={() => void navigator.clipboard?.writeText(location.href)} /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiMoreLine} aria-label="New agent" onClick={newAgent} /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiLayoutRightLine} aria-label="Open inspector" onClick={() => setInspectorOpen(true)} className="lg:!hidden" /></div></header>
+      <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto px-4 pb-3">
+        {current || showExample ? <div className="mx-auto flex w-full max-w-[1810px] flex-col gap-3"><div className="ms-auto max-w-[min(910px,80%)] rounded-2xl border border-border-button-default bg-background-primary-default px-3 py-3 text-body-regular shadow-card">{current?.task || examplePrompt}</div><div className="text-body-regular">{current ? current.summary || current.error || (current.status === "running" || current.status === "queued" ? "Working on your request…" : "Review the execution result below.") : exampleReply}</div>
+          {current && (current.status === "running" || current.status === "queued") && <AgentThinking variant="wave" label="Working in the sandbox" />}
+          {current?.plan?.length ? <ol className="flex flex-wrap gap-x-5 gap-y-1 text-caption-1-regular text-text-secondary">{current.plan.map((step, index) => <li key={index}>{index + 1}. {step}</li>)}</ol> : null}
+          {(current?.code || showExample) && <div className="overflow-hidden rounded-2xl border border-border-button-default bg-background-primary-default shadow-card"><div className="flex h-9 items-center justify-between border-b border-separator-border px-3 text-caption-1-regular text-text-secondary"><span><span className="me-2 rounded bg-accent-50 px-1.5 py-0.5 text-accent-600">{current ? "PY" : "TSX"}</span>{current ? "agent.py" : "theme-toggle.tsx"}</span><span className="flex items-center gap-2"><span className="text-notification-success-foreground">+{current ? additions : 156}</span>{!current && <span className="text-text-error-primary">-23</span>}<Button variant="ghost" size="xs" iconOnly leadingIcon={RiFileCopyLine} aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(current?.code || exampleCode)} /></span></div><div className="max-h-32 overflow-auto py-2"><CodeLines code={current?.code || exampleCode} limit={7} /></div></div>}
+          {current?.output && <pre className="max-h-28 overflow-auto rounded-lg bg-background-primary-default p-3 font-mono text-caption-1-regular text-text-secondary whitespace-pre-wrap">{current.output.stdout || current.output.stderr || "(no output)"}</pre>}
+          {showExample && <div className="flex items-center gap-1 text-text-tertiary"><Button variant="ghost" size="xs" iconOnly leadingIcon={RiThumbUpLine} aria-label="Good response" /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiThumbDownLine} aria-label="Bad response" /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiFileCopyLine} aria-label="Copy response" onClick={() => void navigator.clipboard?.writeText(exampleReply)} /></div>}
+        </div> : <div className="mx-auto flex w-full max-w-xl flex-col gap-4 pb-14 text-center"><h1 className="text-title-2-medium">What should we build?</h1><p className="text-body-regular text-text-secondary">Describe a product task. Forge plans it, writes code, and runs it in an isolated container.</p><div className="flex flex-col gap-2">{suggestions.map(suggestion => <button key={suggestion} type="button" onClick={() => setTask(suggestion)} className="rounded-xl border border-border-button-default bg-background-primary-default p-3 text-start text-body-regular text-text-secondary hover:bg-background-primary-hover">{suggestion}</button>)}</div></div>}
       </div>
-      <div className="border-t border-separator-border p-4">
-        <form className="mx-auto flex max-w-2xl flex-col gap-2" onSubmit={event => { event.preventDefault(); void submit(); }}>
-          <Textarea aria-label="Product task" placeholder="Describe what to build or verify…" value={task} onChange={setTask} rows={2} autoResize maxRows={5} maxLength={2000} fieldClassName="bg-background-primary-default" />
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-caption-1-regular text-text-tertiary">Python · Vultr Inference · isolated Docker</span>
-            <Button type="submit" leadingIcon={RiArrowUpLine} disabled={pending || !task.trim()}>Run task</Button>
-          </div>
-        </form>
-        {error && <p role="alert" className="mx-auto mt-2 max-w-2xl text-caption-1-regular text-text-error-primary">{error}</p>}
+      <div className="shrink-0 px-3 pb-1"><form onSubmit={event => { event.preventDefault(); void submit(); }} className="flex min-h-14 items-center gap-2 rounded-full border border-border-button-default bg-background-primary-default px-2 py-1 shadow-card"><Button variant="ghost" size="small" iconOnly leadingIcon={RiAddLine} aria-label="New agent" onClick={newAgent} className="!rounded-full !bg-background-secondary-default" /><Textarea aria-label="Ask me anything" placeholder="Ask me anything" value={task} onChange={setTask} rows={1} autoResize maxRows={4} maxLength={2000} className="min-w-0 flex-1" fieldClassName="!rounded-none !bg-transparent !p-0 !ring-0" /><span className="hidden shrink-0 items-center gap-1 text-body-regular text-text-secondary sm:flex">{provider.includes("OpenRouter") ? "GPT-6 Luna" : "Vultr model"}<RiArrowDownSLine className="size-4" aria-hidden /></span><Button variant="ghost" size="small" iconOnly leadingIcon={RiMicLine} aria-label="Voice input unavailable" disabled className="!rounded-full" /><Button type="submit" size="small" iconOnly leadingIcon={RiArrowUpLine} aria-label="Send task" disabled={pending} className="!rounded-full" /></form>
+        {error && <p role="alert" className="px-3 pt-1 text-caption-1-regular text-text-error-primary">{error}</p>}
+        <div className="flex h-9 items-center justify-between gap-3 px-2 text-body-regular text-text-secondary"><div className="flex min-w-0 items-center gap-3"><span className="flex items-center gap-1"><RiGitBranchLine className="size-4" aria-hidden />Main</span><span className="flex min-w-0 items-center gap-1 truncate"><RiFolder3Line className="size-4 shrink-0" aria-hidden />{project}</span></div><div className="flex shrink-0 items-center gap-3"><button type="button" onClick={() => void submit("containment")} className="hidden items-center gap-1 hover:text-text-primary sm:flex" title="Run containment demo"><RiShieldCheckLine className="size-4" aria-hidden />Containment</button><span>∞ Agent</span><span className="rounded-full bg-background-tertiary-default px-2 py-0.5 text-caption-1-regular">{configured === null ? "…" : configured ? "Model ready" : "Setup"}</span></div></div>
       </div>
     </section>
 
-    <aside className="flex min-h-[520px] w-full shrink-0 flex-col rounded-3xl border border-border-button-default bg-background-primary-default lg:min-h-0 lg:w-[360px] xl:w-[400px]">
-      <header className="flex items-center justify-between border-b border-separator-border p-4">
-        <div><h2 className="text-headline-medium">Run inspector</h2><p className="text-caption-1-regular text-text-tertiary">Proof of executed work</p></div>
-        {current && <span className="rounded-full bg-background-secondary-default px-3 py-1 text-caption-1-semibold text-text-secondary">{current.status}</span>}
-      </header>
-      <div className="flex gap-2 border-b border-separator-border p-3">
-        <Button variant={inspector === "output" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("output")}>Activity</Button>
-        <Button variant={inspector === "code" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("code")}>Code</Button>
-        {current?.artifact && <Button variant={inspector === "preview" ? "secondary" : "ghost"} size="small" onClick={() => setInspector("preview")}>Preview</Button>}
-      </div>
-      <div className="flex-1 overflow-auto p-5">
-        {!current ? <div className="flex h-full flex-col justify-center gap-3 text-center"><RiShieldCheckLine className="mx-auto size-9 text-foreground-icon-tertiary" aria-hidden /><p className="text-body-medium">Every action has a receipt</p><p className="text-body-2-regular text-text-tertiary">Start a run to see sandbox steps, source, stdout, and stderr.</p></div>
-          : inspector === "preview" && current.artifact ? <iframe title="Generated product preview" sandbox="" referrerPolicy="no-referrer" className="h-full min-h-[420px] w-full rounded-xl border border-border-button-default bg-white" srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:">' + current.artifact} />
-          : inspector === "code" ? <pre className="overflow-auto rounded-xl bg-background-secondary-default p-4 text-caption-1-regular text-text-primary whitespace-pre-wrap">{current.code || "Agent is writing code…"}</pre>
-          : <div className="flex flex-col gap-6">
-            <div><p className="mb-4 text-caption-1-semibold text-text-tertiary">AGENT STEPS</p><AgentSteps steps={current.steps} /></div>
-            {current.output && <div><p className="mb-2 text-caption-1-semibold text-text-tertiary">STDOUT</p><pre className="max-h-48 overflow-auto rounded-xl bg-background-secondary-default p-3 text-caption-1-regular text-text-primary whitespace-pre-wrap">{current.output.stdout || "(empty)"}</pre></div>}
-            {current.output?.stderr && <div><p className="mb-2 text-caption-1-semibold text-text-tertiary">STDERR</p><pre className="max-h-48 overflow-auto rounded-xl bg-background-tertiary-error p-3 text-caption-1-regular text-text-error-primary whitespace-pre-wrap">{current.output.stderr}</pre></div>}
-            {current.output && <p className="text-caption-1-regular text-text-tertiary">Exit {current.output.exitCode ?? "unknown"} · {current.output.timedOut ? "stopped at 12s" : "container removed after run"}</p>}
-          </div>}
-      </div>
-      <footer className="border-t border-separator-border p-4">
-        <Button variant="secondary" leadingIcon={RiShieldCheckLine} onClick={() => void submit("containment")} disabled={pending}>Run containment demo</Button>
-        <p className="mt-2 text-caption-1-regular text-text-tertiary">Starts a loop and proves the sandbox time limit stops it.</p>
-      </footer>
+    <aside className={cx("flex min-h-0 min-w-0 flex-col overflow-hidden bg-background-primary-default max-lg:fixed max-lg:inset-y-2 max-lg:right-2 max-lg:z-30 max-lg:w-[min(424px,calc(100vw-16px))] max-lg:rounded-2xl max-lg:border max-lg:border-border-button-default max-lg:shadow-sidebar", inspectorOpen ? "max-lg:flex" : "max-lg:hidden")}>
+      <header className="flex h-12 shrink-0 items-center justify-between gap-2 px-2"><div className="flex min-w-0 items-center gap-1"><button type="button" onClick={() => setPanel("changes")} className={cx("flex h-8 items-center gap-1.5 rounded-full px-2 text-body-medium", panel === "changes" ? "bg-accent-50 text-accent-600" : "text-text-secondary")}><RiCodeLine className="size-4" aria-hidden />Changes</button><button type="button" onClick={() => setPanel("browser")} className={cx("flex h-8 items-center gap-1.5 rounded-full px-2 text-body-medium", panel === "browser" ? "bg-accent-50 text-accent-600" : "text-text-secondary")}><RiGlobalLine className="size-4" aria-hidden />Browser</button></div><div className="flex items-center gap-0.5"><Button variant="ghost" size="xs" iconOnly leadingIcon={RiMoreLine} aria-label="More inspector options" onClick={() => setPanel(panel === "changes" ? "browser" : "changes")} /><Button variant="ghost" size="xs" iconOnly leadingIcon={RiLayoutRightLine} aria-label="Close inspector" onClick={() => setInspectorOpen(false)} /></div></header>
+      {panel === "changes" ? <><div className="flex h-9 shrink-0 items-center justify-between border-y border-separator-border px-3 text-body-regular text-text-secondary"><span>{current ? current.code ? "1 Generated file" : "No generated file" : "12 Uncommitted changes"} {(!current || additions > 0) && <span className="text-notification-success-foreground">+{current ? additions : 156}</span>} {!current && <span className="text-text-error-primary">-23</span>}</span><RiArrowRightSLine className="size-4" aria-hidden /></div><div className="flex h-9 shrink-0 items-center justify-between gap-2 bg-background-secondary-default px-2 text-body-regular"><span className="min-w-0 truncate"><span className="me-1 text-accent-600">❖</span>{current ? "agent.py" : "boardui/app/components/button.tsx"} {(!current || additions > 0) && <span className="text-notification-success-foreground">+{current ? additions : 74}</span>}</span><span className="rounded bg-background-tertiary-default px-1.5 text-caption-1-regular text-text-secondary">New</span></div><div className="min-h-0 flex-1 overflow-auto py-3">{current && !current.code ? <p className="px-3 text-body-regular text-text-secondary">The agent has not generated source yet.</p> : <CodeLines code={current?.code || exampleSideCode} />}{current?.steps?.length ? <div className="border-t border-separator-border p-4"><p className="mb-3 text-caption-1-semibold text-text-tertiary">EXECUTION STEPS</p><AgentSteps steps={current.steps} /></div> : null}</div></> : <div className="min-h-0 flex-1 overflow-auto border-t border-separator-border p-3">{current?.artifact ? <iframe title="Generated product preview" sandbox="" referrerPolicy="no-referrer" className="h-full min-h-[460px] w-full rounded-xl border border-border-button-default bg-background-primary-default" srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:">' + current.artifact} /> : <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-text-secondary"><RiGlobalLine className="size-8 text-foreground-icon-tertiary" aria-hidden /><p className="text-body-medium">No browser preview yet</p><p className="max-w-xs text-body-regular">Ask Forge to build a static page, then its sandbox-generated preview appears here.</p></div>}</div>}
     </aside>
   </main>;
 }

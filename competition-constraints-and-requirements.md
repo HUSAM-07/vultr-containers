@@ -16,7 +16,7 @@ Checked 7 October 2026 against the [official hackathon page](https://lablab.ai/a
 | --- | --- |
 | Web-based, product-style agent that performs real work | Forge frontend at `web/`; task, project, history, run inspector, static HTML preview, source and execution receipts |
 | Backend control and orchestration on a **Vultr VM** | `server/index.mjs` must be deployed on a Vultr VM; Vercel only serves the frontend and a thin proxy |
-| **All agent LLM calls** through Vultr Serverless Inference | Backend calls `https://api.vultrinference.com/v1/chat/completions`; no other model endpoint is active |
+| **All submitted agent LLM calls** through Vultr Serverless Inference | Vultr is the backend default. Local development can explicitly opt into OpenRouter GPT-6 Luna, but the hackathon deployment must leave `INFERENCE_PROVIDER` unset |
 | Code or browser actions in an isolated sandbox **on Vultr** | Docker container per code task on the Vultr VM, outside the Node app process |
 | Multi-step workflow with verifiable executed result | Model plan → generated code → container stdout/stderr and optional HTML preview → one repair retry on failure |
 | Containment controls | Network disabled, read-only root, non-root user, dropped capabilities, CPU/memory/process limits, 12-second timeout, container removal |
@@ -66,10 +66,10 @@ The attached draft describes a much broader organization-scoped platform: Slack,
 
 - [x] Competition folder and named feature branch
 - [x] Official free BoardUI components and Spectrum UI MCP project registration
-- [x] Vercel frontend, Vultr VM backend code, Vultr-only inference endpoint
+- [x] Vercel frontend, Vultr VM backend code, Vultr-default inference endpoint
 - [x] Isolated Docker command and a containment-demo flow
 - [x] Plan, sandbox guard, preview, and visitor isolation checks; frontend production build
-- [ ] Provision Vultr VM, HTTPS and server-only credentials; pull `python:3.12-alpine`
+- [ ] Provision Vultr VM, HTTPS and server-only credentials; pull `python:3.12-alpine`; confirm OpenRouter override is unset
 - [ ] Exercise a real inference call and Docker run on that VM
 - [ ] Deploy Vercel frontend with `web` root and backend URL/token
 - [ ] Confirm public URL, record video with containment moment, submit slides/cover
