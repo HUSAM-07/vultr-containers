@@ -10,7 +10,7 @@ import { importContext, listRepositories, listSpecPullRequests, publishSpec, val
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
-import { appJwt, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
+import { appJwt, processAuthorizationRevocation, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
 
@@ -359,5 +359,30 @@ test("logout revokes a session in D1 even if its encrypted cookie is reused", as
     await revokeSession(db, reused);
     assert.equal(await readSession(reused, db), null);
     assert.equal(sqlite.prepare("SELECT id_hash FROM sessions").get().id_hash.includes(session.id), false);
+  } finally { sqlite.close(); }
+});
+
+test("GitHub authorization revocation invalidates only that user's sessions", async () => {
+  process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
+  const { db, sqlite } = testDb();
+  try {
+    const sessions = [];
+    for (const id of [1, 1, 2]) {
+      await ensurePersonalAccount(db, { id, login: `user${id}`, avatarUrl: "" });
+      const session = { id: crypto.randomUUID(), token: `token-${id}`,
+        expiresAt: Date.now() + 600_000, user: { id, login: `user${id}`, avatarUrl: "" } };
+      await createSession(db, session);
+      const cookie = await seal(session);
+      sessions.push({ cookies: { get: () => ({ value: cookie }) } });
+    }
+    await assert.rejects(processAuthorizationRevocation(db, { action: "revoked", sender: { id: "1" } }),
+      /Invalid authorization webhook/);
+    assert.deepEqual(await processAuthorizationRevocation(db, { action: "revoked", sender: { id: 1 } }),
+      { revoked: true });
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM sessions WHERE github_id = 1 AND revoked_at IS NOT NULL").get().count, 2);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM sessions WHERE github_id = 2 AND revoked_at IS NULL").get().count, 1);
+    assert.equal(await readSession(sessions[0], db), null);
+    assert.equal(await readSession(sessions[1], db), null);
+    assert.equal((await readSession(sessions[2], db)).session.user.id, 2);
   } finally { sqlite.close(); }
 });

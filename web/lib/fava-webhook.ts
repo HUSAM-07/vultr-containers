@@ -21,6 +21,17 @@ export function verifyWebhookSignature(secret: string, body: Uint8Array, signatu
   return timingSafeEqual(expected, Buffer.from(signature.slice(7), "hex"));
 }
 
+export async function processAuthorizationRevocation(db: Db, payload: unknown) {
+  if (!payload || typeof payload !== "object") throw new GitHubError(400, "Invalid authorization webhook");
+  const event = payload as { action?: unknown; sender?: { id?: unknown } };
+  const userId = event.sender?.id;
+  if (event.action !== "revoked" || typeof userId !== "number" || !Number.isSafeInteger(userId) || userId <= 0)
+    throw new GitHubError(400, "Invalid authorization webhook");
+  await db.prepare("UPDATE sessions SET revoked_at = ? WHERE github_id = ? AND revoked_at IS NULL")
+    .bind(Date.now(), userId).run();
+  return { revoked: true };
+}
+
 export function appJwt(clientId: string, privateKey: string) {
   const now = Math.floor(Date.now() / 1000);
   const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
