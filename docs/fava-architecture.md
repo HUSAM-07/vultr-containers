@@ -11,7 +11,7 @@ The editable diagram is [fava-platform.drawio](fava-platform.drawio). Open it in
 5. An isolated agent workspace checks out that exact commit. The agent receives the spec, selected project/shared skills, bounded repository context, chosen model, and approved MCP connections. It opens an implementation PR with test evidence and a preview URL.
 6. A spec conformance check compares changed files and behavior against acceptance criteria. Unrelated changes are flagged or removed before the implementation PR is marked ready.
 
-The current implementation covers steps 1–3 locally once a GitHub App is configured, including personal account creation, repository project links, and spec PR records in D1. A signed `pull_request.closed` webhook verifies the App installation, PR files, and spec content at the merge commit before marking a tracked spec merged. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
+The current implementation covers steps 1–3 locally once a GitHub App is configured, including personal account creation, repository project links, and spec PR records in D1. The editor saves a selected model on the spec record. A signed `pull_request.closed` webhook verifies the App installation, PR files, and spec content at the merge commit before marking a tracked spec merged and creating one queued run. The workspace lists recent spec-only pull requests and queued runs. The Sandbox dispatcher is still required to execute them. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
 
 ## Boundaries and Cloudflare services
 
@@ -31,7 +31,7 @@ The current implementation covers steps 1–3 locally once a GitHub App is confi
 
 Cloudflare service choice follows the workload: KV is a cache, D1 is the durable relational store, and R2 holds large blobs. Deploying every Cloudflare product would add cost and failure paths without satisfying a user requirement. AWS and GCP are optional deployment adapters, not dependencies of the Cloudflare-native path. Their connectors need scoped roles/service accounts and per-project consent; MCP servers run inside the project workspace, never in the browser.
 
-The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudflare/0001_core.sql). CI checks its relational constraints with SQLite. The Cloudflare Worker binds D1, creates a personal account at GitHub sign-in, and stores selected repository projects. Account roles beyond personal ownership, revocation, and run state remain unimplemented at runtime. The local schema is applied with `npm run db:migrate:local` from `web/`; no remote database has been provisioned.
+The D1 schema and model migration are in [`infra/cloudflare/0001_core.sql`](../infra/cloudflare/0001_core.sql) and [`infra/cloudflare/0002_spec_model.sql`](../infra/cloudflare/0002_spec_model.sql). CI checks their relational constraints with SQLite. The Cloudflare Worker binds D1, creates a personal account at GitHub sign-in, and stores selected repository projects. Account roles beyond personal ownership, revocation, and run execution remain unimplemented at runtime. The local schema is applied with `npm run db:migrate:local` from `web/`; no remote database has been provisioned.
 
 ## Identity and GitHub integration
 
@@ -39,7 +39,7 @@ The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudfla
 - OAuth uses state and PKCE. The current session is an AES-GCM encrypted, HTTP-only, SameSite=Lax cookie with token refresh. A production multi-tenant service will store sessions and encrypted provider credentials server-side in D1/R2 with a dedicated key-management policy; the cookie will then contain an opaque session ID.
 - Fava account identity is the immutable GitHub user ID. Organization and project roles will be owner, admin, editor, viewer. Every API call must enforce Fava role **and** current GitHub installation/repository permission. Installation changes and revoked authorizations invalidate access.
 - GitHub API writes use the person's GitHub App user token, so the audit trail attributes the action to that person. Webhook-triggered work uses an installation token restricted to the single repository.
-- A spec PR contains only `specs/<slug>-<id>.md`. Branch protection and CI should require human approval before merge. The webhook checks the exact file and merged contents, records the merge commit, and treats duplicate deliveries idempotently. Dispatching an implementation run after that record remains to be built.
+- A spec PR contains only `specs/<slug>-<id>.md`. Branch protection and CI should require human approval before merge. The webhook checks the exact file and merged contents, records the merge commit, and creates an idempotent queued run with the selected model. A dispatcher and isolated execution environment remain to be built.
 
 ## Agent harness and source-of-truth checks
 

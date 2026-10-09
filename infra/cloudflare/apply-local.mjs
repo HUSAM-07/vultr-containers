@@ -32,3 +32,16 @@ if (expected.every(name => current.includes(name))) {
   if (!expected.every(name => installed.includes(name))) throw Error("Local D1 schema verification failed");
   console.log("Local Fava D1 schema applied");
 }
+
+const specColumns = (await query("PRAGMA table_info(specs)")).rows.map(row => row[1]);
+const modelColumns = ["provider", "model"];
+if (modelColumns.every(name => specColumns.includes(name))) {
+  console.log("Local Fava model migration is already applied");
+} else if (modelColumns.some(name => specColumns.includes(name))) {
+  throw Error("Local D1 has a partial model migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0002_spec_model.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(specs)")).rows.map(row => row[1]);
+  if (!modelColumns.every(name => installed.includes(name))) throw Error("Local model migration verification failed");
+  console.log("Local Fava model migration applied");
+}

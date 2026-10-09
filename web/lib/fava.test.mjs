@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
-import { ensurePersonalAccount, linkProject, listProjects, recordSpec } from "./fava-db.ts";
+import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec } from "./fava-db.ts";
 import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
+import { chooseModel } from "./fava-models.ts";
 import { seal, unseal } from "./fava-session.ts";
 import { appJwt, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
@@ -14,6 +15,7 @@ const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n#
 function testDb() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0001_core.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0002_spec_model.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -33,6 +35,7 @@ function testDb() {
 }
 
 test("spec validation rejects template guidance", () => {
+  assert.throws(() => chooseModel("arbitrary-model"), /supported agent model/);
   assert.throws(() => validateSpec("Export dashboard", "## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test."), /Replace the template/);
   assert.equal(validateSpec("Export dashboard", spec).title, "Export dashboard");
 });
@@ -117,8 +120,10 @@ test("GitHub identity creates one personal account and links a repository once",
     assert.equal(first.id, second.id);
     assert.deepEqual(await listProjects(db, account), [{ id: first.id, repository: "owner/repo", defaultBranch: "main" }]);
     assert.deepEqual(await listProjects(db, "github:2"), []);
-    await recordSpec(db, first.id, 1, { number: 4, path: "specs/export-123.md", branch: "spec/export-123" });
-    assert.equal(sqlite.prepare("SELECT status FROM specs WHERE project_id = ? AND pull_number = 4").get(first.id).status, "open");
+    await recordSpec(db, first.id, 1, { number: 4, path: "specs/export-123.md", branch: "spec/export-123" },
+      chooseModel("gpt-6-sol"));
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, provider, model FROM specs WHERE project_id = ? AND pull_number = 4").get(first.id) },
+      { status: "open", provider: "openai", model: "gpt-6-sol" });
     await ensurePersonalAccount(db, { id: 1, login: "renamed", avatarUrl: "" });
     assert.equal(sqlite.prepare("SELECT login FROM users WHERE github_id = 1").get().login, "renamed");
   } finally { sqlite.close(); }
@@ -131,7 +136,7 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
     const project = await linkProject(db, account, { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
     const specId = await recordSpec(db, project.id, 1,
-      { number: 4, path: "specs/export-123.md", branch: "spec/export-123" });
+      { number: 4, path: "specs/export-123.md", branch: "spec/export-123" }, chooseModel("gpt-6-sol"));
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs1", format: "pem" });
     const jwt = appJwt("Iv1.test", pem);
@@ -174,22 +179,30 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     ]);
     assert.deepEqual(JSON.parse(requests[0].init.body).repository_ids, [42]);
     assert.equal(sqlite.prepare("SELECT status FROM specs WHERE id = ?").get(specId).status, "merged");
+    assert.deepEqual({ ...sqlite.prepare("SELECT spec_id AS specId, merged_commit_sha AS sha, model, provider, status FROM runs WHERE spec_id = ?").get(specId) },
+      { specId, sha: "a".repeat(40), model: "gpt-6-sol", provider: "openai", status: "queued" });
+    assert.equal((await listRuns(db, account, "owner/repo")).length, 1);
+    assert.deepEqual(await listRuns(db, "github:2", "owner/repo"), []);
     assert.equal(sqlite.prepare("SELECT processed_at FROM webhook_deliveries WHERE delivery_id = 'delivery-1'").get().processed_at > 0, true);
     assert.deepEqual(await processPullRequestEvent(db, event, "delivery-1",
       { clientId: "Iv1.test", privateKey: pem }), { recorded: true, duplicate: true });
     assert.equal(requests.length, 3);
+    assert.deepEqual(await processPullRequestEvent(db, event, "delivery-1-redelivery",
+      { clientId: "Iv1.test", privateKey: pem }), { recorded: true, status: "merged", specIds: [specId] });
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM runs WHERE spec_id = ?").get(specId).count, 1);
     await recordSpec(db, project.id, 1,
-      { number: 5, path: "specs/unsafe-123.md", branch: "spec/unsafe-123" });
+      { number: 5, path: "specs/unsafe-123.md", branch: "spec/unsafe-123" }, chooseModel("claude-sonnet-5"));
     await assert.rejects(processPullRequestEvent(db, { ...event,
       pull_request: { ...event.pull_request, number: 5, head: { ref: "spec/unsafe-123" } } },
     "delivery-2", { clientId: "Iv1.test", privateKey: pem }), error => error.status === 422);
     assert.equal(sqlite.prepare("SELECT status FROM specs WHERE pull_number = 5").get().status, "open");
     await recordSpec(db, project.id, 1,
-      { number: 6, path: "specs/invalid-123.md", branch: "spec/invalid-123" });
+      { number: 6, path: "specs/invalid-123.md", branch: "spec/invalid-123" }, chooseModel("gpt-6-sol"));
     await assert.rejects(processPullRequestEvent(db, { ...event,
       pull_request: { ...event.pull_request, number: 6, head: { ref: "spec/invalid-123" } } },
     "delivery-3", { clientId: "Iv1.test", privateKey: pem }), error => error.status === 422);
     assert.equal(sqlite.prepare("SELECT status FROM specs WHERE pull_number = 6").get().status, "open");
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM runs").get().count, 1);
   } finally { globalThis.fetch = original; sqlite.close(); }
 });
 

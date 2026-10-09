@@ -12,7 +12,7 @@ type PullEvent = {
     head: { ref: string }; base: { ref: string } };
 };
 type TrackedSpec = { id: string; path: string; branch: string; status: string;
-  mergedSha: string | null; defaultBranch: string };
+  mergedSha: string | null; defaultBranch: string; provider: string | null; model: string | null };
 
 export function verifyWebhookSignature(secret: string, body: Uint8Array, signature: string | null) {
   if (!signature || !/^sha256=[a-f0-9]{64}$/.test(signature)) return false;
@@ -41,7 +41,7 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
     typeof pull.head?.ref !== "string" || typeof pull.base?.ref !== "string")
     throw new GitHubError(400, "Invalid pull request webhook");
   const name = parseRepo(repo.full_name);
-  const tracked = await db.prepare("SELECT specs.id, specs.path, specs.branch, specs.status, specs.merged_commit_sha AS mergedSha, projects.default_branch AS defaultBranch FROM specs JOIN projects ON projects.id = specs.project_id WHERE projects.github_repo_id = ? AND projects.installation_id = ? AND specs.pull_number = ?")
+  const tracked = await db.prepare("SELECT specs.id, specs.path, specs.branch, specs.status, specs.merged_commit_sha AS mergedSha, specs.provider, specs.model, projects.default_branch AS defaultBranch FROM specs JOIN projects ON projects.id = specs.project_id WHERE projects.github_repo_id = ? AND projects.installation_id = ? AND specs.pull_number = ?")
     .bind(repo.id, installation.id, pull.number)
     .all<TrackedSpec>();
   const specs = (tracked.results as TrackedSpec[]).filter(spec => spec.branch === pull.head.ref && spec.defaultBranch === pull.base.ref);
@@ -89,6 +89,10 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
   await db.batch([
     ...matching.map(spec => db.prepare("UPDATE specs SET status = 'merged', merged_commit_sha = ? WHERE id = ?")
       .bind(pull.merge_commit_sha, spec.id)),
+    // shortcut: queued runs stay in D1 until the Sandbox dispatcher is deployed; retry them from a scheduled worker.
+    ...matching.filter(spec => spec.provider && spec.model).map(spec =>
+      db.prepare("INSERT OR IGNORE INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)")
+        .bind(crypto.randomUUID(), spec.id, pull.merge_commit_sha, spec.model, spec.provider, Date.now())),
     db.prepare("UPDATE webhook_deliveries SET processed_at = ? WHERE delivery_id = ?").bind(Date.now(), deliveryId),
   ]);
   return { recorded: true, status: "merged", specIds: matching.map(spec => spec.id) };

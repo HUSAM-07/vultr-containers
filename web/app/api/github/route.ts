@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
-import { ensurePersonalAccount, linkProject, listProjects, recordSpec } from "@/lib/fava-db";
+import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec } from "@/lib/fava-db";
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
+import { chooseModel } from "@/lib/fava-models";
 import { clearSession, readSession, setSession } from "@/lib/fava-session";
 
 function fail(error: unknown) {
@@ -27,6 +28,7 @@ export async function GET(request: NextRequest) {
     const repo = request.nextUrl.searchParams.get("repo") || "";
     const value = action === "repos" ? await listRepositories(auth.session.token)
       : action === "projects" ? await listProjects(env.DB, `github:${auth.session.user.id}`)
+      : action === "runs" ? await listRuns(env.DB, `github:${auth.session.user.id}`, parseRepo(repo))
       : action === "context" ? await importContext(auth.session.token, repo)
       : action === "specs" ? await listSpecPullRequests(auth.session.token, repo)
       : null;
@@ -65,16 +67,19 @@ export async function POST(request: NextRequest) {
       return response;
     }
     const body = await readJson(request, 50_000);
-    if (!body || typeof body !== "object" || !("repo" in body) || !("title" in body) || !("content" in body))
+    if (!body || typeof body !== "object" || !("repo" in body) || !("title" in body) || !("content" in body) || !("model" in body))
       throw new GitHubError(400, "Invalid specification");
-    const { repo, title, content } = body;
+    const { repo, title, content, model } = body;
     if (typeof repo !== "string" || typeof title !== "string" || typeof content !== "string")
       return NextResponse.json({ error: "Invalid specification" }, { status: 400 });
+    let selected: ReturnType<typeof chooseModel>;
+    try { selected = chooseModel(model); }
+    catch { throw new GitHubError(400, "Choose a supported agent model"); }
     const linked = await env.DB.prepare("SELECT id FROM projects WHERE account_id = ? AND full_name = ?")
       .bind(`github:${auth.session.user.id}`, parseRepo(repo)).first<{ id: string }>();
     if (!linked) throw new GitHubError(403, "Link this repository to your Fava account first");
     const result = await publishSpec(auth.session.token, repo, title, content);
-    try { await recordSpec(env.DB, linked.id, auth.session.user.id, result); }
+    try { await recordSpec(env.DB, linked.id, auth.session.user.id, result, selected); }
     catch { throw new GitHubError(502, `Spec PR ${result.url} was created, but Fava could not track it. Contact the project owner before merging.`); }
     const response = NextResponse.json(result, { status: 201 });
     if (auth.refreshed) await setSession(response, request, auth.session);
