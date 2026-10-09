@@ -95,16 +95,35 @@ export async function github<T>(token: string, path: string, method = "GET", bod
 type GitHubRepo = { id: number; full_name: string; private: boolean; default_branch: string; html_url: string;
   permissions?: { push?: boolean } };
 
+async function pages<T>(token: string, path: string, field: "installations" | "repositories", maxPages: number) {
+  const items: T[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const result = await github<{ total_count?: number; installations?: T[]; repositories?: T[] }>(token,
+      `${path}?per_page=100${page === 1 ? "" : `&page=${page}`}`);
+    const chunk = result[field];
+    if (!Array.isArray(chunk)) throw new GitHubError(502, "GitHub returned an invalid repository listing");
+    items.push(...chunk);
+    if (chunk.length < 100 || Number.isSafeInteger(result.total_count) && items.length >= result.total_count!)
+      return items;
+  }
+  // shortcut: enumerate at most 2,000 installations or 2,000 repositories per installation; add server-side search for larger accounts.
+  throw new GitHubError(422, "This GitHub account has too many repositories to list; narrow the App installation");
+}
+
 export async function listRepositories(token: string): Promise<Repository[]> {
-  const { installations } = await github<{ installations: { id: number }[] }>(token, "/user/installations?per_page=100");
-  const pages = await Promise.all(installations.slice(0, 20).map(async installation => {
-    const { repositories } = await github<{ repositories: GitHubRepo[] }>(token,
-      `/user/installations/${installation.id}/repositories?per_page=100`);
-    return repositories.map(repo => ({ id: repo.id, fullName: repo.full_name, private: repo.private,
+  const installations = await pages<{ id: number }>(token, "/user/installations", "installations", 20);
+  const found: Repository[] = [];
+  for (let index = 0; index < installations.length; index += 8) {
+    const batch = await Promise.all(installations.slice(index, index + 8).map(async installation => {
+      const repositories = await pages<GitHubRepo>(token,
+        `/user/installations/${installation.id}/repositories`, "repositories", 20);
+      return repositories.map(repo => ({ id: repo.id, fullName: repo.full_name, private: repo.private,
       defaultBranch: repo.default_branch, htmlUrl: repo.html_url, canPush: Boolean(repo.permissions?.push),
-      installationId: installation.id }));
-  }));
-  return pages.flat().sort((a, b) => a.fullName.localeCompare(b.fullName));
+        installationId: installation.id }));
+    }));
+    found.push(...batch.flat());
+  }
+  return found.sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
 export async function importContext(token: string, name: string) {

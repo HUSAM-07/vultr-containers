@@ -115,16 +115,23 @@ test("context import stops when GitHub does not return a commit SHA", async () =
   } finally { globalThis.fetch = original; }
 });
 
-test("repository listing retains the installation needed to link a project", async () => {
+test("repository listing includes later installation pages", async () => {
   const original = globalThis.fetch;
-  const replies = [
-    { installations: [{ id: 7 }] },
-    { repositories: [{ id: 42, full_name: "owner/repo", private: true, default_branch: "main",
-      html_url: "https://github.com/owner/repo", permissions: { push: true } }] },
-  ];
-  globalThis.fetch = async () => Response.json(replies.shift());
+  const repository = id => ({ id, full_name: `owner/repo-${id}`, private: true,
+    default_branch: "main", html_url: `https://github.com/owner/repo-${id}`, permissions: { push: true } });
+  globalThis.fetch = async url => {
+    const path = String(url);
+    if (path.endsWith("/user/installations?per_page=100"))
+      return Response.json({ total_count: 1, installations: [{ id: 7 }] });
+    if (path.endsWith("/repositories?per_page=100"))
+      return Response.json({ total_count: 101, repositories: Array.from({ length: 100 }, (_, i) => repository(i + 1)) });
+    assert.equal(path.endsWith("/repositories?per_page=100&page=2"), true);
+    return Response.json({ total_count: 101, repositories: [repository(101)] });
+  };
   try {
-    assert.equal((await listRepositories("test-token"))[0].installationId, 7);
+    const listed = await listRepositories("test-token");
+    assert.equal(listed.length, 101);
+    assert.equal(listed.find(item => item.id === 101)?.installationId, 7);
   } finally { globalThis.fetch = original; }
 });
 
@@ -169,14 +176,25 @@ test("GitHub identity creates one personal account and links a repository once",
 test("project membership grants only its role and still requires the same GitHub repository", async () => {
   const { sqlite, db } = testDb();
   const original = globalThis.fetch;
+  const oldClientId = process.env.GITHUB_APP_CLIENT_ID;
+  const oldPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.GITHUB_APP_CLIENT_ID = "Iv1.test";
+  process.env.GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs1", format: "pem" });
   try {
     const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
     await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
     const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
     const project = await linkProject(db, account, repo);
     sqlite.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, 2, 'viewer')").run(project.id);
-    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
-      ? { repositories: [{ id: 42 }] } : { id: 42 });
+    globalThis.fetch = async (url, init) => {
+      if (String(url).endsWith("/installation")) {
+        assert.match(init.headers.Authorization, /^Bearer eyJ/);
+        return Response.json({ id: 7 });
+      }
+      assert.equal(init.headers.Authorization, "Bearer member-token");
+      return Response.json({ id: 42 });
+    };
     assert.deepEqual(await listProjects(db, 2, [repo]), [{ id: project.id, accountId: account,
       accountName: "owner's workspace", repository: repo.fullName,
       defaultBranch: "main", role: "viewer", accountRole: null }]);
@@ -185,13 +203,18 @@ test("project membership grants only its role and still requires the same GitHub
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token", "editor"), /do not have access/);
     sqlite.prepare("UPDATE project_memberships SET role = 'editor' WHERE project_id = ? AND github_id = 2").run(project.id);
     assert.equal((await projectAccess(db, 2, repo.fullName, "member-token", "editor")).role, "editor");
-    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
-      ? { repositories: [] } : { id: 42 });
+    globalThis.fetch = async url => Response.json({ id: String(url).endsWith("/installation") ? 8 : 42 });
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token"), /no longer has access/);
-    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
-      ? { repositories: [{ id: 42 }] } : { id: 43 });
+    globalThis.fetch = async url => Response.json({ id: String(url).endsWith("/installation") ? 7 : 43 });
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token"), /identity changed/);
-  } finally { globalThis.fetch = original; sqlite.close(); }
+  } finally {
+    globalThis.fetch = original;
+    if (oldClientId === undefined) delete process.env.GITHUB_APP_CLIENT_ID;
+    else process.env.GITHUB_APP_CLIENT_ID = oldClientId;
+    if (oldPrivateKey === undefined) delete process.env.GITHUB_APP_PRIVATE_KEY;
+    else process.env.GITHUB_APP_PRIVATE_KEY = oldPrivateKey;
+    sqlite.close();
+  }
 });
 
 test("project administrators can add GitHub users before sign-in", async () => {

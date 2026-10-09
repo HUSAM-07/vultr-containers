@@ -15,6 +15,7 @@ function fail(error: unknown) {
 export async function GET(request: NextRequest) {
   const action = request.nextUrl.searchParams.get("action") || "session";
   const configured = Boolean(env.DB && process.env.GITHUB_APP_CLIENT_ID && process.env.GITHUB_APP_CLIENT_SECRET &&
+    process.env.GITHUB_APP_PRIVATE_KEY &&
     process.env.FAVA_SESSION_SECRET && process.env.FAVA_SESSION_SECRET.length >= 32);
   if (action === "session" && !configured) return NextResponse.json({ configured: false, connected: false });
   try {

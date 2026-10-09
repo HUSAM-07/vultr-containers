@@ -1,4 +1,5 @@
 import { github, GitHubError, parseRepo, type Repository } from "./fava-github.ts";
+import { appJwt } from "./fava-webhook.ts";
 import type { env } from "./runtime-env.ts";
 
 type User = { id: number; login: string; avatarUrl: string };
@@ -141,12 +142,15 @@ export async function projectAccess(db: Db, userId: number, repository: string, 
   const project = projects.sort((a, b) => rank[b.role] - rank[a.role] ||
     Number(b.accountId === `github:${userId}`) - Number(a.accountId === `github:${userId}`))[0];
   if (!project) throw new GitHubError(403, "You do not have access to this Fava project");
-  const installation = await github<{ repositories: { id: number }[] }>(token,
-    `/user/installations/${project.installationId}/repositories?per_page=100`);
-  if (!installation.repositories.some(repo => repo.id === project.githubRepoId))
-    throw new GitHubError(403, "The Fava GitHub App no longer has access to this repository");
   const current = await github<{ id: number }>(token, `/repos/${name}`);
   if (current.id !== project.githubRepoId) throw new GitHubError(403, "Repository identity changed; relink it to Fava");
+  if (!process.env.GITHUB_APP_CLIENT_ID || !process.env.GITHUB_APP_PRIVATE_KEY)
+    throw new GitHubError(503, "The Fava GitHub App is not configured");
+  const installation = await github<{ id: number }>(
+    appJwt(process.env.GITHUB_APP_CLIENT_ID, process.env.GITHUB_APP_PRIVATE_KEY),
+    `/repos/${name}/installation`);
+  if (installation.id !== project.installationId)
+    throw new GitHubError(403, "The Fava GitHub App no longer has access to this repository");
   return project;
 }
 
