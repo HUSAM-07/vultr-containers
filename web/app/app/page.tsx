@@ -97,6 +97,7 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
+    const restoreId = choiceId.current;
     let savedRepo = "";
     try {
       const draft = JSON.parse(localStorage.getItem("fava:draft") || "{}");
@@ -118,6 +119,14 @@ export default function WorkspacePage() {
         const prior = linked.find(project => project.repository === savedRepo);
         setWorkspaceId(prior?.accountId || workspaces[0]?.id || "");
         if (savedRepo && available.some(item => item.fullName === savedRepo)) await choose(savedRepo, prior);
+      } else if (savedRepo && restoreId === choiceId.current) {
+        // shortcut: re-fetch public context on reload; cache by commit if anonymous GitHub rate limits become common.
+        try {
+          const imported = await importContext("", savedRepo, true);
+          if (restoreId === choiceId.current) setContext(imported);
+        } catch (cause) {
+          if (restoreId === choiceId.current) setPublicImportError((cause as Error).message);
+        }
       }
     }).catch(cause => setError((cause as Error).message));
   }, [choose]);
@@ -169,18 +178,20 @@ export default function WorkspacePage() {
 
   async function importPublic() {
     if (!publicRepoInput.trim() || busy) return;
+    const requestId = ++choiceId.current;
     setBusy(true); setError(""); setPublicImportError("");
     try {
       const name = parseRepo(publicRepoInput.trim());
       const imported = await importContext("", name, true);
+      if (requestId !== choiceId.current) return;
       if (repo) restoreDraft(name);
       else {
         try { if (localStorage.getItem(draftKey(name))) restoreDraft(name); }
         catch { /* Local drafts are optional. */ }
       }
       setRepo(name); setPublicRepoInput(name); setContext(imported); setSpecs([]); setRuns([]); setPublished(null);
-    } catch (cause) { setPublicImportError((cause as Error).message); }
-    finally { setBusy(false); }
+    } catch (cause) { if (requestId === choiceId.current) setPublicImportError((cause as Error).message); }
+    finally { if (requestId === choiceId.current) setBusy(false); }
   }
 
   async function connectCreated() {

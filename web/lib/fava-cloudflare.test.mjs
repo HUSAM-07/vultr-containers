@@ -11,7 +11,7 @@ test("selects the production trigger for the linked GitHub repository", () => {
   ];
   assert.equal(productionTrigger(triggers, "main", 34)?.trigger_uuid, "right");
   assert.equal(productionTrigger(triggers, "main", 56), undefined);
-  assert.equal(productionTrigger(triggers.map(({ repo_connection, ...trigger }) => trigger),
+  assert.equal(productionTrigger(triggers.map(trigger => ({ ...trigger, repo_connection: undefined })),
     "main", 34, "linked")?.trigger_uuid, "right");
 });
 
