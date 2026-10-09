@@ -94,6 +94,36 @@ export async function github<T>(token: string, path: string, method = "GET", bod
 
 type GitHubRepo = { id: number; full_name: string; private: boolean; default_branch: string; html_url: string;
   permissions?: { push?: boolean } };
+type GitHubContentFile = { content?: string; encoding?: string; size?: number };
+
+function decodeTextFile(file: GitHubContentFile | null) {
+  if (!file || file.encoding !== "base64" || typeof file.content !== "string" ||
+    typeof file.size !== "number" || !Number.isSafeInteger(file.size) ||
+    file.size < 0 || file.size > 50_000 || file.content.length > 70_000)
+    return null;
+  try {
+    const binary = atob(file.content.replace(/\s/g, ""));
+    if (binary.length !== file.size) return null;
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      Uint8Array.from(binary, character => character.charCodeAt(0)));
+  } catch { return null; }
+}
+
+export async function readContextFile(token: string, name: string, path: string, sha: string, publicOnly = false) {
+  const repo = parseRepo(name);
+  if (!/^[a-f0-9]{40}$/i.test(sha) || path.length > 500 || !path.split("/").every(segment =>
+    segment && segment !== "." && segment !== ".." && !/[\\\x00-\x1f\x7f]/.test(segment)))
+    throw new GitHubError(400, "Choose a valid file from the imported commit");
+  if (publicOnly) {
+    const metadata = await github<GitHubRepo>(token, `/repos/${repo}`);
+    if (metadata.private !== false) throw new GitHubError(403, "Connect GitHub to read a private repository");
+  }
+  const file = await github<GitHubContentFile>(token,
+    `/repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`);
+  const text = decodeTextFile(file);
+  if (text === null) throw new GitHubError(422, "Only UTF-8 files up to 50 KB can be inspected");
+  return { path, text };
+}
 
 export async function createRepository(token: string, owner: string, name: string, isPrivate: boolean) {
   const fullName = parseRepo(`${owner}/${name.trim()}`);
@@ -170,17 +200,10 @@ export async function importContext(token: string, name: string, publicOnly = fa
     ".github/copilot-instructions.md", ...nestedInstructions, "package.json", "pyproject.toml",
     "Cargo.toml", "docs/architecture.md", "docs/README.md", "specs/README.md"];
   const files = await Promise.all(candidates.filter(path => paths.includes(path)).slice(0, 8).map(async path => {
-    const file = await github<{ content: string; encoding: string; size: number }>(token,
+    const file = await github<GitHubContentFile>(token,
       `/repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${commitSha}`);
-    if (file.encoding !== "base64" || typeof file.content !== "string" ||
-      !Number.isSafeInteger(file.size) || file.size < 0 || file.size > 50_000 ||
-      file.content.length > 70_000) return null;
-    try {
-      const binary = atob(file.content.replace(/\s/g, ""));
-      if (binary.length !== file.size) return null;
-      return { path, text: new TextDecoder("utf-8", { fatal: true }).decode(
-        Uint8Array.from(binary, character => character.charCodeAt(0))) };
-    } catch { return null; }
+    const text = decodeTextFile(file);
+    return text === null ? null : { path, text };
   }));
   return { repository: repo, defaultBranch: metadata.default_branch, commitSha, paths: paths.slice(0, 400),
     truncated: tree.truncated || paths.length > 400, files: files.filter(file => file !== null) };

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { accountAccess, cancelRun, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
-import { addCreatedRepositoryToInstallation, createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
+import { addCreatedRepositoryToInstallation, createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec, readContextFile } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
 import { refreshRunPreviews } from "@/lib/fava-run-previews";
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     if (action === "repos") value = await listRepositories(auth.session.token);
     else if (action === "projects") value = await listProjects(env.DB, auth.session.user.id,
       await listRepositories(auth.session.token));
-    else if (["runs", "context", "specs"].includes(action)) {
+    else if (["runs", "context", "specs", "file"].includes(action)) {
       const project = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token);
       if (action === "runs") {
         const runs = await listRuns(env.DB, project.accountId, project.repository);
@@ -40,7 +40,9 @@ export async function GET(request: NextRequest) {
           request.nextUrl.searchParams.get("refresh") === "1"); }
         catch (error) { console.error("Run Preview refresh failed", project.id, error instanceof Error ? error.name : "unknown"); }
         value = runs;
-      } else value = action === "context" ? await importContext(auth.session.token, project.repository)
+      } else if (action === "file") value = await readContextFile(auth.session.token, project.repository,
+        request.nextUrl.searchParams.get("path") || "", request.nextUrl.searchParams.get("ref") || "");
+      else value = action === "context" ? await importContext(auth.session.token, project.repository)
         : await listSpecPullRequests(auth.session.token, project.repository);
     }
     if (!value) return NextResponse.json({ error: "Not found" }, { status: 404 });

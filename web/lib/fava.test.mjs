@@ -9,7 +9,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
 import { encryptToken } from "./fava-cloudflare.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
-import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
+import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { runEvents } from "./fava-run-events.ts";
@@ -284,6 +284,30 @@ test("context import includes nested agent instructions and skips invalid text",
       "src/AGENTS.md", "package.json"]);
     assert.equal(requested.length, 5);
     assert.ok(requested.every(path => path.endsWith(`?ref=${commitSha}`)));
+  } finally { globalThis.fetch = original; }
+});
+
+test("context file reads stay pinned to a commit and reject unsafe or oversized paths", async () => {
+  const original = globalThis.fetch;
+  const sha = "a".repeat(40);
+  const requests = [];
+  globalThis.fetch = async url => {
+    requests.push(String(url));
+    if (String(url).endsWith("/repos/owner/repo")) return Response.json({ private: false });
+    return Response.json({ content: Buffer.from("export const visibleRows = [];").toString("base64"),
+      encoding: "base64", size: 30 });
+  };
+  try {
+    assert.deepEqual(await readContextFile("", "owner/repo", "src/export.ts", sha, true),
+      { path: "src/export.ts", text: "export const visibleRows = [];" });
+    assert.deepEqual(requests, ["https://api.github.com/repos/owner/repo",
+      `https://api.github.com/repos/owner/repo/contents/src/export.ts?ref=${sha}`]);
+    await assert.rejects(readContextFile("", "owner/repo", "../private", sha, true), /valid file/);
+    assert.equal(requests.length, 2);
+    globalThis.fetch = async () => Response.json({ private: true });
+    await assert.rejects(readContextFile("", "owner/repo", "private.ts", sha, true), /private repository/);
+    globalThis.fetch = async () => Response.json({ content: "x".repeat(70_001), encoding: "base64", size: 50_001 });
+    await assert.rejects(readContextFile("token", "owner/repo", "large.ts", sha), /50 KB/);
   } finally { globalThis.fetch = original; }
 });
 
