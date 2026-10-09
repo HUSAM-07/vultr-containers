@@ -76,11 +76,13 @@ test("recent previews stay on the configured trigger and show the latest build p
   const builds = [
     { build_uuid: "old", created_on: "2026-10-01", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" } },
     { build_uuid: "production", created_on: "2026-10-05", build_trigger_metadata: { branch: "main" }, trigger: { trigger_uuid: "production" } },
-    { build_uuid: "new", created_on: "2026-10-03", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" }, preview_url: "https://example.workers.dev" },
-    { build_uuid: "other", created_on: "2026-10-02", build_trigger_metadata: { branch: "another" }, trigger: { trigger_uuid: "preview" }, preview_url: "javascript:alert(1)" },
+    { build_uuid: "new", created_on: "2026-10-03", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" }, build_outcome: "success", preview_url: "https://example.workers.dev" },
+    { build_uuid: "other", created_on: "2026-10-02", build_trigger_metadata: { branch: "another" }, trigger: { trigger_uuid: "preview" }, build_outcome: "success", preview_url: "javascript:alert(1)" },
+    { build_uuid: "failed", created_on: "2026-10-04", build_trigger_metadata: { branch: "broken" }, trigger: { trigger_uuid: "preview" }, build_outcome: "failure", preview_url: "https://old-preview.workers.dev" },
   ];
   assert.deepEqual(recentPreviewBuilds(builds, "preview"), [
-    { branch: "feature", buildUuid: "new", status: "unknown", outcome: null, url: "https://example.workers.dev" },
-    { branch: "another", buildUuid: "other", status: "unknown", outcome: null, url: null },
+    { branch: "broken", buildUuid: "failed", status: "unknown", outcome: "failure", url: null },
+    { branch: "feature", buildUuid: "new", status: "unknown", outcome: "success", url: "https://example.workers.dev" },
+    { branch: "another", buildUuid: "other", status: "unknown", outcome: "success", url: null },
   ]);
 });

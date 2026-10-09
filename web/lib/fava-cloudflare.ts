@@ -144,5 +144,5 @@ export function recentPreviewBuilds(builds: PreviewBuild[], triggerUuid: string)
     .slice(0, 5)
     .map(build => ({ branch: build.build_trigger_metadata!.branch!, buildUuid: build.build_uuid,
       status: build.status || "unknown", outcome: build.build_outcome || null,
-      url: build.preview_url?.startsWith("https://") ? build.preview_url : null }));
+      url: build.build_outcome === "success" && build.preview_url?.startsWith("https://") ? build.preview_url : null }));
 }
