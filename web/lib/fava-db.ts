@@ -7,7 +7,7 @@ type PublishedSpec = { number: number; path: string; branch: string };
 type Model = { provider: "openai" | "anthropic"; model: string };
 export type Role = "owner" | "admin" | "editor" | "viewer";
 type ProjectAccess = { id: string; accountId: string; githubRepoId: number; repository: string;
-  defaultBranch: string; accountRole: Role | null; projectRole: Role | null; role: Role };
+  accountName: string; defaultBranch: string; accountRole: Role | null; projectRole: Role | null; role: Role };
 const rank: Record<Role, number> = { owner: 3, admin: 3, editor: 2, viewer: 1 };
 
 export async function ensurePersonalAccount(db: Db, user: User) {
@@ -22,6 +22,71 @@ export async function ensurePersonalAccount(db: Db, user: User) {
       .bind(accountId, user.id),
   ]);
   return accountId;
+}
+
+export async function listAccounts(db: Db, userId: number) {
+  const result = await db.prepare("SELECT accounts.id, accounts.name, account_memberships.role FROM accounts JOIN account_memberships ON account_memberships.account_id = accounts.id WHERE account_memberships.github_id = ? ORDER BY accounts.created_at, accounts.id")
+    .bind(userId).all<{ id: string; name: string; role: Role }>();
+  return result.results;
+}
+
+export async function accountAccess(db: Db, userId: number, accountId: string,
+  minimum: "viewer" | "editor" | "admin" = "viewer") {
+  const account = await db.prepare("SELECT accounts.id, accounts.name, accounts.owner_github_id AS ownerGithubId, account_memberships.role FROM accounts JOIN account_memberships ON account_memberships.account_id = accounts.id WHERE accounts.id = ? AND account_memberships.github_id = ?")
+    .bind(accountId, userId).first<{ id: string; name: string; ownerGithubId: number; role: Role }>() as
+      { id: string; name: string; ownerGithubId: number; role: Role } | null;
+  if (!account || rank[account.role] < rank[minimum])
+    throw new GitHubError(403, "You do not have access to manage this workspace");
+  return account;
+}
+
+export async function createAccount(db: Db, userId: number, name: string) {
+  const id = `team:${crypto.randomUUID()}`;
+  await db.batch([
+    db.prepare("INSERT INTO accounts (id, name, owner_github_id, created_at) VALUES (?, ?, ?, ?)")
+      .bind(id, name, userId, Date.now()),
+    db.prepare("INSERT INTO account_memberships (account_id, github_id, role) VALUES (?, ?, 'owner')")
+      .bind(id, userId),
+  ]);
+  return { id, name, role: "owner" as const };
+}
+
+export async function listAccountMembers(db: Db, accountId: string) {
+  const result = await db.prepare("SELECT users.github_id AS githubId, users.login, account_memberships.role FROM account_memberships JOIN users ON users.github_id = account_memberships.github_id WHERE account_memberships.account_id = ? ORDER BY users.login COLLATE NOCASE")
+    .bind(accountId).all<{ githubId: number; login: string; role: Role }>();
+  return result.results;
+}
+
+async function signedInUser(db: Db, token: string, login: string) {
+  const identity = await github<{ id: number; login: string }>(token, `/users/${encodeURIComponent(login)}`);
+  const user = await db.prepare("SELECT github_id AS githubId FROM users WHERE github_id = ?")
+    .bind(identity.id).first<{ githubId: number }>();
+  if (!user) throw new GitHubError(404, "This GitHub user must sign in to Fava before joining a workspace");
+  await db.prepare("UPDATE users SET login = ? WHERE github_id = ?").bind(identity.login, user.githubId).run();
+  return user.githubId;
+}
+
+export async function setAccountMember(db: Db, accountId: string, token: string, login: string,
+  role: "admin" | "editor" | "viewer") {
+  const githubId = await signedInUser(db, token, login);
+  const account = await db.prepare("SELECT owner_github_id AS ownerGithubId FROM accounts WHERE id = ?")
+    .bind(accountId).first<{ ownerGithubId: number }>();
+  if (githubId === account?.ownerGithubId) throw new GitHubError(403, "Workspace owner role cannot be changed");
+  await db.prepare("INSERT INTO account_memberships (account_id, github_id, role) VALUES (?, ?, ?) ON CONFLICT(account_id, github_id) DO UPDATE SET role = excluded.role")
+    .bind(accountId, githubId, role).run();
+  return githubId;
+}
+
+export async function removeAccountMember(db: Db, accountId: string, githubId: number) {
+  const account = await db.prepare("SELECT owner_github_id AS ownerGithubId FROM accounts WHERE id = ?")
+    .bind(accountId).first<{ ownerGithubId: number }>();
+  if (githubId === account?.ownerGithubId) throw new GitHubError(403, "Workspace owner cannot be removed");
+  await db.batch([
+    db.prepare("DELETE FROM account_memberships WHERE account_id = ? AND github_id = ?")
+      .bind(accountId, githubId),
+    db.prepare("DELETE FROM project_memberships WHERE github_id = ? AND project_id IN (SELECT id FROM projects WHERE account_id = ?)")
+      .bind(githubId, accountId),
+  ]);
 }
 
 export async function linkProject(db: Db, accountId: string, repo: Repository) {
@@ -42,12 +107,11 @@ export async function linkProject(db: Db, accountId: string, repo: Repository) {
   const project = await db.prepare("SELECT id FROM projects WHERE account_id = ? AND github_repo_id = ?")
     .bind(accountId, repo.id).first<{ id: string }>();
   if (!project) throw Error("Project was not saved");
-  return { id: project.id, repository: repo.fullName, defaultBranch: repo.defaultBranch,
-    role: "owner" as const, accountRole: "owner" as const };
+  return { id: project.id, repository: repo.fullName, defaultBranch: repo.defaultBranch };
 }
 
 async function memberships(db: Db, userId: number) {
-  const result = await db.prepare("SELECT projects.id, projects.account_id AS accountId, projects.github_repo_id AS githubRepoId, projects.full_name AS repository, projects.default_branch AS defaultBranch, account_memberships.role AS accountRole, project_memberships.role AS projectRole FROM projects LEFT JOIN account_memberships ON account_memberships.account_id = projects.account_id AND account_memberships.github_id = ? LEFT JOIN project_memberships ON project_memberships.project_id = projects.id AND project_memberships.github_id = ? WHERE account_memberships.github_id IS NOT NULL OR project_memberships.github_id IS NOT NULL ORDER BY projects.created_at DESC")
+  const result = await db.prepare("SELECT projects.id, projects.account_id AS accountId, accounts.name AS accountName, projects.github_repo_id AS githubRepoId, projects.full_name AS repository, projects.default_branch AS defaultBranch, account_memberships.role AS accountRole, project_memberships.role AS projectRole FROM projects JOIN accounts ON accounts.id = projects.account_id LEFT JOIN account_memberships ON account_memberships.account_id = projects.account_id AND account_memberships.github_id = ? LEFT JOIN project_memberships ON project_memberships.project_id = projects.id AND project_memberships.github_id = ? WHERE account_memberships.github_id IS NOT NULL OR project_memberships.github_id IS NOT NULL ORDER BY projects.created_at DESC")
     .bind(userId, userId).all<Omit<ProjectAccess, "role">>();
   return (result.results as Omit<ProjectAccess, "role">[]).map(project => ({ ...project,
     role: (project.accountRole && (!project.projectRole || rank[project.accountRole] >= rank[project.projectRole])
@@ -64,8 +128,8 @@ export async function listProjects(db: Db, userId: number, repositories: Reposit
       (rank[project.role] === rank[prior.role] && project.accountId === `github:${userId}`))
       selected.set(project.repository, project);
   }
-  return [...selected.values()].map(({ id, repository, defaultBranch, role, accountRole }) =>
-    ({ id, repository, defaultBranch, role, accountRole }));
+  return [...selected.values()].map(({ id, accountId, accountName, repository, defaultBranch, role, accountRole }) =>
+    ({ id, accountId, accountName, repository, defaultBranch, role, accountRole }));
 }
 
 export async function projectAccess(db: Db, userId: number, repository: string, token: string,
@@ -88,14 +152,12 @@ export async function listProjectMembers(db: Db, projectId: string) {
   return result.results;
 }
 
-export async function setProjectMember(db: Db, projectId: string, login: string,
+export async function setProjectMember(db: Db, projectId: string, token: string, login: string,
   role: "admin" | "editor" | "viewer") {
-  const user = await db.prepare("SELECT github_id AS githubId FROM users WHERE login = ? COLLATE NOCASE")
-    .bind(login).first<{ githubId: number }>();
-  if (!user) throw new GitHubError(404, "This GitHub user must sign in to Fava before joining a project");
+  const githubId = await signedInUser(db, token, login);
   await db.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, ?, ?) ON CONFLICT(project_id, github_id) DO UPDATE SET role = excluded.role")
-    .bind(projectId, user.githubId, role).run();
-  return user.githubId;
+    .bind(projectId, githubId, role).run();
+  return githubId;
 }
 
 export async function removeProjectMember(db: Db, projectId: string, githubId: number) {

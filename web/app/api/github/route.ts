@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
-import { ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
+import { accountAccess, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
@@ -66,9 +66,12 @@ export async function POST(request: NextRequest) {
       const available = await listRepositories(auth.session.token);
       const selected = available.find(item => item.fullName.toLowerCase() === name.toLowerCase());
       if (!selected) throw new GitHubError(403, "Install the Fava GitHub App on this repository first");
-      const accountId = await ensurePersonalAccount(env.DB, auth.session.user);
+      const accountId = "accountId" in body && typeof body.accountId === "string"
+        ? body.accountId : await ensurePersonalAccount(env.DB, auth.session.user);
+      const account = await accountAccess(env.DB, auth.session.user.id, accountId, "admin");
       const project = await linkProject(env.DB, accountId, selected);
-      const response = NextResponse.json(project, { status: 201 });
+      const response = NextResponse.json({ ...project, accountId, accountName: account.name,
+        role: account.role, accountRole: account.role }, { status: 201 });
       if (auth.refreshed) await setSession(response, request, auth.session);
       return response;
     }

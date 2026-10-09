@@ -36,7 +36,8 @@ export async function POST(request: NextRequest) {
       if (!("login" in body) || typeof body.login !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(body.login) ||
         !("role" in body) || !["admin", "editor", "viewer"].includes(String(body.role)))
         throw new GitHubError(400, "Choose a GitHub user and project role");
-      await setProjectMember(env.DB, project.id, body.login, body.role as "admin" | "editor" | "viewer");
+      await setProjectMember(env.DB, project.id, auth.session.token, body.login,
+        body.role as "admin" | "editor" | "viewer");
     } else if (body.action === "remove") {
       if (!("githubId" in body) || !Number.isSafeInteger(body.githubId) || Number(body.githubId) <= 0)
         throw new GitHubError(400, "Choose a project member");

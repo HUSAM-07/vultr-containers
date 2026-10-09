@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
-import { ensurePersonalAccount, linkProject, listProjectMembers, listProjects, listRuns,
-  projectAccess, recordSpec, removeProjectMember, setProjectMember } from "./fava-db.ts";
+import { accountAccess, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
+  listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
+  removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
@@ -129,7 +130,8 @@ test("GitHub identity creates one personal account and links a repository once",
     const first = await linkProject(db, account, repo);
     const second = await linkProject(db, account, repo);
     assert.equal(first.id, second.id);
-    assert.deepEqual(await listProjects(db, 1, [repo]), [{ id: first.id, repository: "owner/repo", defaultBranch: "main", role: "owner", accountRole: "owner" }]);
+    assert.deepEqual(await listProjects(db, 1, [repo]), [{ id: first.id, accountId: account,
+      accountName: "owner's workspace", repository: "owner/repo", defaultBranch: "main", role: "owner", accountRole: "owner" }]);
     assert.deepEqual(await listProjects(db, 2, [repo]), []);
     await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
     await assert.rejects(linkProject(db, "github:2", repo), /already belongs/);
@@ -152,7 +154,8 @@ test("project membership grants only its role and still requires the same GitHub
     const project = await linkProject(db, account, repo);
     sqlite.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, 2, 'viewer')").run(project.id);
     globalThis.fetch = async () => Response.json({ id: 42 });
-    assert.deepEqual(await listProjects(db, 2, [repo]), [{ id: project.id, repository: repo.fullName,
+    assert.deepEqual(await listProjects(db, 2, [repo]), [{ id: project.id, accountId: account,
+      accountName: "owner's workspace", repository: repo.fullName,
       defaultBranch: "main", role: "viewer", accountRole: null }]);
     assert.equal((await projectAccess(db, 2, repo.fullName, "member-token")).id, project.id);
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token", "editor"), /do not have access/);
@@ -165,19 +168,51 @@ test("project membership grants only its role and still requires the same GitHub
 
 test("project administrators can add, change, and remove signed-in members", async () => {
   const { sqlite, db } = testDb();
+  const original = globalThis.fetch;
   try {
     const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
     await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
     const project = await linkProject(db, account,
       { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
-    await assert.rejects(setProjectMember(db, project.id, "unknown", "viewer"), /sign in/);
-    assert.equal(await setProjectMember(db, project.id, "MEMBER", "viewer"), 2);
+    globalThis.fetch = async url => Response.json(String(url).endsWith("/unknown")
+      ? { id: 999, login: "unknown" } : { id: 2, login: "member" });
+    await assert.rejects(setProjectMember(db, project.id, "test-token", "unknown", "viewer"), /sign in/);
+    assert.equal(await setProjectMember(db, project.id, "test-token", "MEMBER", "viewer"), 2);
     assert.deepEqual(await listProjectMembers(db, project.id), [{ githubId: 2, login: "member", role: "viewer" }]);
-    await setProjectMember(db, project.id, "member", "editor");
+    await setProjectMember(db, project.id, "test-token", "member", "editor");
     assert.equal((await listProjectMembers(db, project.id))[0].role, "editor");
     await removeProjectMember(db, project.id, 2);
     assert.deepEqual(await listProjectMembers(db, project.id), []);
-  } finally { sqlite.close(); }
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("team workspace roles control access and protect its owner", async () => {
+  const { sqlite, db } = testDb();
+  const original = globalThis.fetch;
+  try {
+    await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
+    const team = await createAccount(db, 1, "Product team");
+    assert.equal((await listAccounts(db, 1)).find(item => item.id === team.id)?.role, "owner");
+    await assert.rejects(accountAccess(db, 2, team.id), /do not have access/);
+    globalThis.fetch = async url => Response.json(String(url).endsWith("/owner")
+      ? { id: 1, login: "owner" } : { id: 2, login: "member" });
+    await setAccountMember(db, team.id, "test-token", "member", "viewer");
+    await assert.rejects(accountAccess(db, 2, team.id, "admin"), /do not have access/);
+    assert.equal((await listAccountMembers(db, team.id)).length, 2);
+    await setAccountMember(db, team.id, "test-token", "member", "admin");
+    assert.equal((await accountAccess(db, 2, team.id, "admin")).role, "admin");
+    await assert.rejects(setAccountMember(db, team.id, "test-token", "owner", "viewer"), /owner role/);
+    await assert.rejects(removeAccountMember(db, team.id, 1), /owner cannot/);
+    const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
+    const project = await linkProject(db, team.id, repo);
+    assert.deepEqual((await listProjects(db, 2, [repo]))[0], { ...project,
+      accountId: team.id, accountName: "Product team", role: "admin", accountRole: "admin" });
+    sqlite.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, 2, 'editor')").run(project.id);
+    await removeAccountMember(db, team.id, 2);
+    assert.deepEqual(await listProjects(db, 2, [repo]), []);
+    assert.deepEqual(await listProjectMembers(db, project.id), []);
+  } finally { globalThis.fetch = original; sqlite.close(); }
 });
 
 test("signed merge webhook records only a tracked spec-only PR", async () => {
