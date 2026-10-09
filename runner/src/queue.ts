@@ -10,13 +10,13 @@ type RunRow = { id: string; repository: string; repositoryId: number; installati
 type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number };
 
 async function queued(env: Env) {
-  const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND projects.installation_id > 0 AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
+  const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND runs.execution_mode = 'cloud' AND projects.installation_id > 0 AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
     .all<RunRow>();
   return result.results;
 }
 
 async function running(env: Env) {
-  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' ORDER BY runs.created_at LIMIT 10")
+  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' AND runs.execution_mode = 'cloud' ORDER BY runs.created_at LIMIT 10")
     .all<RunningRow>();
   return result.results;
 }
@@ -46,7 +46,7 @@ async function loadRunMcpGrants(env: Env, runId: string) {
 
 export async function reconcile(env: Env) {
   // shortcut: cancellation stops the container on the next minute tick; use a queue for immediate stops.
-  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member') AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
+  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND execution_mode = 'cloud' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member') AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
     .all<{ id: string }>();
   for (const run of cancelled.results) {
     try {
@@ -128,7 +128,7 @@ export async function dispatch(env: Env) {
     try { model = chooseModel(row.model); }
     catch { continue; }
     if (model.provider !== row.provider) continue;
-    const claimed = await env.DB.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'")
+    const claimed = await env.DB.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued' AND execution_mode = 'cloud'")
       .bind(Date.now(), row.id).run();
     if (claimed.meta.changes !== 1) continue;
     let skills: string;

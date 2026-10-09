@@ -166,3 +166,19 @@ if (localDevices.length === 2) {
   if (installed.length !== 2) throw Error("Local device migration verification failed");
   console.log("Local device migration applied");
 }
+
+const leaseColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+const localLeaseColumns = ["execution_mode", "lease_id", "lease_device_id", "lease_expires_at"];
+const specMode = (await query("PRAGMA table_info(specs)")).rows.some(row => row[1] === "execution_mode");
+const eligibleView = (await query("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'eligible_local_devices'")).rows.length === 1;
+if (localLeaseColumns.every(name => leaseColumns.includes(name)) && specMode && eligibleView) {
+  console.log("Local run-lease migration is already applied");
+} else if (localLeaseColumns.some(name => leaseColumns.includes(name)) || specMode || eligibleView) {
+  throw Error("Local D1 has a partial run-lease migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0014_local_run_leases.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  const view = (await query("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'eligible_local_devices'")).rows.length === 1;
+  if (!localLeaseColumns.every(name => installed.includes(name)) || !view) throw Error("Local run-lease migration verification failed");
+  console.log("Local run-lease migration applied");
+}

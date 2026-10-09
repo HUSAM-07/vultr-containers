@@ -195,9 +195,10 @@ export async function cancelRun(db: Db, projectId: string, runId: string) {
   throw new GitHubError(409, "This run has already finished or started publishing its pull request");
 }
 
-export async function recordSpec(db: Db, projectId: string, userId: number, spec: PublishedSpec, selected: Model) {
+export async function recordSpec(db: Db, projectId: string, userId: number, spec: PublishedSpec, selected: Model,
+  executionMode: "cloud" | "local" = "cloud") {
   const id = crypto.randomUUID();
-  await db.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, created_by, created_at, provider, model) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)")
-    .bind(id, projectId, spec.path, spec.branch, spec.number, userId, Date.now(), selected.provider, selected.model).run();
+  await db.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, created_by, created_at, provider, model, execution_mode) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)")
+    .bind(id, projectId, spec.path, spec.branch, spec.number, userId, Date.now(), selected.provider, selected.model, executionMode).run();
   return id;
 }

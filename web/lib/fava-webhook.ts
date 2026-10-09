@@ -13,7 +13,7 @@ type PullEvent = {
 };
 type TrackedSpec = { id: string; path: string; branch: string; status: string;
   mergedSha: string | null; defaultBranch: string; provider: string | null; model: string | null;
-  projectId: string; accountId: string };
+  projectId: string; accountId: string; executionMode: "cloud" | "local" };
 
 export function verifyWebhookSignature(secret: string, body: Uint8Array, signature: string | null) {
   if (!signature || !/^sha256=[a-f0-9]{64}$/.test(signature)) return false;
@@ -108,7 +108,7 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
     typeof pull.head?.ref !== "string" || typeof pull.base?.ref !== "string")
     throw new GitHubError(400, "Invalid pull request webhook");
   const name = parseRepo(repo.full_name);
-  const tracked = await db.prepare("SELECT specs.id, specs.path, specs.branch, specs.status, specs.merged_commit_sha AS mergedSha, specs.provider, specs.model, projects.id AS projectId, projects.account_id AS accountId, projects.default_branch AS defaultBranch FROM specs JOIN projects ON projects.id = specs.project_id WHERE projects.github_repo_id = ? AND projects.installation_id = ? AND specs.pull_number = ?")
+  const tracked = await db.prepare("SELECT specs.id, specs.path, specs.branch, specs.status, specs.merged_commit_sha AS mergedSha, specs.provider, specs.model, specs.execution_mode AS executionMode, projects.id AS projectId, projects.account_id AS accountId, projects.default_branch AS defaultBranch FROM specs JOIN projects ON projects.id = specs.project_id WHERE projects.github_repo_id = ? AND projects.installation_id = ? AND specs.pull_number = ?")
     .bind(repo.id, installation.id, pull.number)
     .all<TrackedSpec>();
   const specs = (tracked.results as TrackedSpec[]).filter(spec => spec.branch === pull.head.ref && spec.defaultBranch === pull.base.ref);
@@ -167,8 +167,8 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
       .bind(pull.merge_commit_sha, spec.id)),
     // shortcut: queued runs stay in D1 until the scheduled runner is deployed; it claims them on its next tick.
     ...runs.map(({ spec, id }) =>
-      db.prepare("INSERT OR IGNORE INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)")
-        .bind(id, spec.id, pull.merge_commit_sha, spec.model, spec.provider, Date.now())),
+      db.prepare("INSERT OR IGNORE INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)")
+        .bind(id, spec.id, pull.merge_commit_sha, spec.model, spec.provider, Date.now(), spec.executionMode)),
     ...runs.flatMap(({ spec, id, skills }) => skills.map((skill: { id: string; commitSha: string }) =>
       db.prepare("INSERT INTO run_skills (run_id, skill_id, commit_sha) SELECT ?, ?, ? FROM runs WHERE id = ? AND spec_id = ?")
         .bind(id, skill.id, skill.commitSha, id, spec.id))),

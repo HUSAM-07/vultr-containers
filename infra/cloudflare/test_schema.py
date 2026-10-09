@@ -19,6 +19,7 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0011_server_sessions.sql").read_text())
         db.executescript(Path(__file__).with_name("0012_cloudflare_oauth.sql").read_text())
         db.executescript(Path(__file__).with_name("0013_local_devices.sql").read_text())
+        db.executescript(Path(__file__).with_name("0014_local_run_leases.sql").read_text())
         self.assertIn("payload_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(sessions)")])
         self.assertIn("refresh_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(cloudflare_connections)")])
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")
@@ -50,6 +51,11 @@ class SchemaTest(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("INSERT INTO run_mcp_grants VALUES ('r', 'grant')")
         db.execute("INSERT INTO local_devices (id, project_id, label, token_hash, created_by, created_at, expires_at) VALUES ('device', 'p', 'Laptop', 'hash', 1, 1, 2)")
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM eligible_local_devices").fetchone()[0], 1)
+        db.execute("DELETE FROM account_memberships WHERE account_id = 'a' AND github_id = 1")
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM eligible_local_devices").fetchone()[0], 0)
+        db.execute("INSERT INTO account_memberships VALUES ('a', 1, 'owner')")
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM eligible_local_devices").fetchone()[0], 1)
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("INSERT INTO local_devices (id, project_id, label, token_hash, created_by, created_at, expires_at) VALUES ('other', 'p', 'Laptop', 'hash', 1, 1, 2)")
 

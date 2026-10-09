@@ -9,6 +9,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice } from "./fava-devices.ts";
+import { authenticateDevice, claimLocalRun, renewLocalRun } from "./fava-local-runs.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -66,6 +67,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0011_server_sessions.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0012_cloudflare_oauth.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0013_local_devices.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0014_local_run_leases.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -131,6 +133,43 @@ test("local device credentials are project-scoped, hashed, rotated, revoked, and
     assert.deepEqual(sqlite.prepare("SELECT action FROM local_device_events ORDER BY created_at, rowid").all().map(row => row.action),
       ["paired", "rotated", "revoked"]);
     await assert.rejects(deviceTokenHash("invalid"), /Invalid device credential/);
+  } finally { sqlite.close(); }
+});
+
+test("local runs require a merged spec, fence competing devices, and stop after cancellation or revocation", async () => {
+  const { sqlite, db } = testDb();
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1); INSERT INTO projects VALUES ('q', 'a', 43, 'owner/other', 7, 'main', 1)");
+    sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model, execution_mode) VALUES ('s', 'p', 'specs/change.md', 'spec/change', 4, 'open', ?, 1, 1, 'openai', 'gpt-6-sol', 'local')")
+      .run("a".repeat(40));
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1, 'local')")
+      .run("11111111-1111-4111-8111-111111111111", "a".repeat(40));
+    const first = await pairDevice(db, "p", 1, "Laptop one");
+    const second = await pairDevice(db, "p", 1, "Laptop two");
+    const other = await pairDevice(db, "q", 1, "Other project");
+    const a = await authenticateDevice(db, `Bearer ${first.token}`);
+    const b = await authenticateDevice(db, `Bearer ${second.token}`);
+    assert.equal(await claimLocalRun(db, await authenticateDevice(db, `Bearer ${other.token}`)), null);
+    assert.equal(await claimLocalRun(db, a), null);
+    sqlite.exec("UPDATE specs SET status = 'merged'");
+    assert.equal(await claimLocalRun(db, await authenticateDevice(db, `Bearer ${other.token}`)), null);
+    const claimed = await claimLocalRun(db, a);
+    assert.equal(claimed.sha, "a".repeat(40));
+    assert.equal(await claimLocalRun(db, b), null);
+    assert.equal((await renewLocalRun(db, a, claimed.id, claimed.leaseId)).leaseId, claimed.leaseId);
+    sqlite.exec("UPDATE runs SET lease_expires_at = 1");
+    const recovered = await claimLocalRun(db, b);
+    assert.notEqual(recovered.leaseId, claimed.leaseId);
+    await assert.rejects(renewLocalRun(db, a, claimed.id, claimed.leaseId), /no longer active/);
+    sqlite.exec("DELETE FROM account_memberships WHERE account_id = 'a' AND github_id = 1");
+    await assert.rejects(authenticateDevice(db, `Bearer ${second.token}`), /no longer active/);
+    await assert.rejects(renewLocalRun(db, b, recovered.id, recovered.leaseId), /no longer active/);
+    sqlite.exec("INSERT INTO account_memberships VALUES ('a', 1, 'owner')");
+    await changeDevice(db, "p", 1, second.id, "revoke");
+    await assert.rejects(authenticateDevice(db, `Bearer ${second.token}`), /no longer active/);
+    await assert.rejects(renewLocalRun(db, b, recovered.id, recovered.leaseId), /no longer active/);
+    sqlite.exec("UPDATE runs SET status = 'cancelled'");
+    await assert.rejects(renewLocalRun(db, b, recovered.id, recovered.leaseId), /no longer active/);
   } finally { sqlite.close(); }
 });
 
@@ -565,7 +604,7 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     sqlite.prepare("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES ('grant-1', ?, 'https://mcp.example.org/mcp', '[\"list\"]', 1, 1)")
       .run(project.id);
     const specId = await recordSpec(db, project.id, 1,
-      { number: 4, path: "specs/export-123.md", branch: "spec/export-123" }, chooseModel("gpt-6-sol"));
+      { number: 4, path: "specs/export-123.md", branch: "spec/export-123" }, chooseModel("gpt-6-sol"), "local");
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs1", format: "pem" });
     const jwt = appJwt("Iv1.test", pem);
@@ -608,8 +647,8 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     ]);
     assert.deepEqual(JSON.parse(requests[0].init.body).repository_ids, [42]);
     assert.equal(sqlite.prepare("SELECT status FROM specs WHERE id = ?").get(specId).status, "merged");
-    assert.deepEqual({ ...sqlite.prepare("SELECT spec_id AS specId, merged_commit_sha AS sha, model, provider, status FROM runs WHERE spec_id = ?").get(specId) },
-      { specId, sha: "a".repeat(40), model: "gpt-6-sol", provider: "openai", status: "queued" });
+    assert.deepEqual({ ...sqlite.prepare("SELECT spec_id AS specId, merged_commit_sha AS sha, model, provider, status, execution_mode AS executionMode FROM runs WHERE spec_id = ?").get(specId) },
+      { specId, sha: "a".repeat(40), model: "gpt-6-sol", provider: "openai", status: "queued", executionMode: "local" });
     assert.equal(sqlite.prepare("SELECT commit_sha AS sha FROM run_skills").get().sha, "b".repeat(40));
     assert.equal(sqlite.prepare("SELECT grant_id AS grantId FROM run_mcp_grants").get().grantId, "grant-1");
     assert.equal((await listRuns(db, account, "owner/repo")).length, 1);

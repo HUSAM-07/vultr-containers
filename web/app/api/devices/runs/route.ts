@@ -1,0 +1,25 @@
+import { NextRequest, NextResponse } from "next/server";
+import { env } from "@/lib/runtime-env";
+import { GitHubError } from "@/lib/fava-github";
+import { readJson } from "@/lib/fava-json";
+import { authenticateDevice, claimLocalRun, renewLocalRun } from "@/lib/fava-local-runs";
+
+export async function POST(request: NextRequest) {
+  try {
+    const device = await authenticateDevice(env.DB, request.headers.get("authorization"));
+    const body = await readJson(request, 300);
+    if (!body || typeof body !== "object" || !("action" in body) || typeof body.action !== "string")
+      throw new GitHubError(400, "Invalid device run request");
+    let result;
+    if (body.action === "claim") result = await claimLocalRun(env.DB, device);
+    else if (body.action === "heartbeat" && "runId" in body && typeof body.runId === "string" &&
+      "leaseId" in body && typeof body.leaseId === "string")
+      result = await renewLocalRun(env.DB, device, body.runId, body.leaseId);
+    else throw new GitHubError(400, "Invalid device run action");
+    return NextResponse.json(result || { pending: true }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const status = error instanceof GitHubError ? error.status : 502;
+    return NextResponse.json({ error: error instanceof GitHubError ? error.message : "Local run service is unavailable" },
+      { status, headers: { "Cache-Control": "no-store" } });
+  }
+}
