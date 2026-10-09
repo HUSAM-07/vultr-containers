@@ -6,7 +6,7 @@ type Db = typeof env.DB;
 type PublishedSpec = { number: number; path: string; branch: string };
 type Model = { provider: "openai" | "anthropic"; model: string };
 export type Role = "owner" | "admin" | "editor" | "viewer";
-type ProjectAccess = { id: string; accountId: string; githubRepoId: number; repository: string;
+type ProjectAccess = { id: string; accountId: string; githubRepoId: number; installationId: number; repository: string;
   accountName: string; defaultBranch: string; accountRole: Role | null; projectRole: Role | null; role: Role };
 const rank: Record<Role, number> = { owner: 3, admin: 3, editor: 2, viewer: 1 };
 
@@ -111,7 +111,7 @@ export async function linkProject(db: Db, accountId: string, repo: Repository) {
 }
 
 async function memberships(db: Db, userId: number) {
-  const result = await db.prepare("SELECT projects.id, projects.account_id AS accountId, accounts.name AS accountName, projects.github_repo_id AS githubRepoId, projects.full_name AS repository, projects.default_branch AS defaultBranch, account_memberships.role AS accountRole, project_memberships.role AS projectRole FROM projects JOIN accounts ON accounts.id = projects.account_id LEFT JOIN account_memberships ON account_memberships.account_id = projects.account_id AND account_memberships.github_id = ? LEFT JOIN project_memberships ON project_memberships.project_id = projects.id AND project_memberships.github_id = ? WHERE account_memberships.github_id IS NOT NULL OR project_memberships.github_id IS NOT NULL ORDER BY projects.created_at DESC")
+  const result = await db.prepare("SELECT projects.id, projects.account_id AS accountId, accounts.name AS accountName, projects.github_repo_id AS githubRepoId, projects.installation_id AS installationId, projects.full_name AS repository, projects.default_branch AS defaultBranch, account_memberships.role AS accountRole, project_memberships.role AS projectRole FROM projects JOIN accounts ON accounts.id = projects.account_id LEFT JOIN account_memberships ON account_memberships.account_id = projects.account_id AND account_memberships.github_id = ? LEFT JOIN project_memberships ON project_memberships.project_id = projects.id AND project_memberships.github_id = ? WHERE account_memberships.github_id IS NOT NULL OR project_memberships.github_id IS NOT NULL ORDER BY projects.created_at DESC")
     .bind(userId, userId).all<Omit<ProjectAccess, "role">>();
   return (result.results as Omit<ProjectAccess, "role">[]).map(project => ({ ...project,
     role: (project.accountRole && (!project.projectRole || rank[project.accountRole] >= rank[project.projectRole])
@@ -119,10 +119,10 @@ async function memberships(db: Db, userId: number) {
 }
 
 export async function listProjects(db: Db, userId: number, repositories: Repository[]) {
-  const available = new Set(repositories.map(repo => repo.id));
+  const available = new Map(repositories.map(repo => [repo.id, repo.installationId]));
   const selected = new Map<string, ProjectAccess>();
   for (const project of await memberships(db, userId)) {
-    if (!available.has(project.githubRepoId)) continue;
+    if (available.get(project.githubRepoId) !== project.installationId || project.installationId <= 0) continue;
     const prior = selected.get(project.repository);
     if (!prior || rank[project.role] > rank[prior.role] ||
       (rank[project.role] === rank[prior.role] && project.accountId === `github:${userId}`))
@@ -136,11 +136,15 @@ export async function projectAccess(db: Db, userId: number, repository: string, 
   minimum: "viewer" | "editor" | "admin" = "viewer", projectId?: string) {
   const name = parseRepo(repository);
   const projects = (await memberships(db, userId)).filter(project =>
-    project.repository.toLowerCase() === name.toLowerCase() && rank[project.role] >= rank[minimum] &&
+    project.installationId > 0 && project.repository.toLowerCase() === name.toLowerCase() && rank[project.role] >= rank[minimum] &&
     (!projectId || project.id === projectId));
   const project = projects.sort((a, b) => rank[b.role] - rank[a.role] ||
     Number(b.accountId === `github:${userId}`) - Number(a.accountId === `github:${userId}`))[0];
   if (!project) throw new GitHubError(403, "You do not have access to this Fava project");
+  const installation = await github<{ repositories: { id: number }[] }>(token,
+    `/user/installations/${project.installationId}/repositories?per_page=100`);
+  if (!installation.repositories.some(repo => repo.id === project.githubRepoId))
+    throw new GitHubError(403, "The Fava GitHub App no longer has access to this repository");
   const current = await github<{ id: number }>(token, `/repos/${name}`);
   if (current.id !== project.githubRepoId) throw new GitHubError(403, "Repository identity changed; relink it to Fava");
   return project;

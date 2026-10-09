@@ -224,3 +224,14 @@ test("stale running jobs fail and their containers stop", async () => {
     assert.equal(wasStopped(), true);
   } finally { sqlite.close(); }
 });
+
+test("cancelled installation runs stop their agent container", async () => {
+  const { sqlite, env, wasStopped } = fixture();
+  try {
+    sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'GitHub installation access removed', started_at = 1, completed_at = 2 WHERE id = ?")
+      .run(runId);
+    await reconcile(env);
+    assert.equal(wasStopped(), true);
+    assert.match(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /agent stopped/);
+  } finally { sqlite.close(); }
+});

@@ -35,7 +35,7 @@ The D1 migrations are [`0001_core.sql`](../infra/cloudflare/0001_core.sql) throu
 
 ## Identity and GitHub integration
 
-- GitHub App permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. Subscribe to `pull_request` and `github_app_authorization` events; installation change handlers are still required.
+- GitHub App permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. Subscribe to `pull_request` and `github_app_authorization` events. Installation and installation repository events disconnect affected projects, cancel their runs, and require relinking before work resumes.
 - OAuth uses state and PKCE. The current session is an AES-GCM encrypted, HTTP-only, SameSite=Lax cookie with token refresh. Its random ID is hashed in D1 and checked on every request; logout revokes it. A production multi-tenant service will move encrypted provider credentials server-side with a dedicated key-management policy, leaving only an opaque session ID in the cookie.
 - Fava account identity is the immutable GitHub user ID. Organization and project roles will be owner, admin, editor, viewer. Every API call must enforce Fava role **and** current GitHub installation/repository permission. Installation changes and revoked authorizations invalidate access.
 - GitHub API writes use the person's GitHub App user token, so the audit trail attributes the action to that person. Webhook-triggered work uses an installation token restricted to the single repository.

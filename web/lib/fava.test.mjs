@@ -10,7 +10,7 @@ import { importContext, listRepositories, listSpecPullRequests, publishSpec, val
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
-import { appJwt, processAuthorizationRevocation, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
+import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
 
@@ -171,15 +171,21 @@ test("project membership grants only its role and still requires the same GitHub
     const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
     const project = await linkProject(db, account, repo);
     sqlite.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, 2, 'viewer')").run(project.id);
-    globalThis.fetch = async () => Response.json({ id: 42 });
+    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
+      ? { repositories: [{ id: 42 }] } : { id: 42 });
     assert.deepEqual(await listProjects(db, 2, [repo]), [{ id: project.id, accountId: account,
       accountName: "owner's workspace", repository: repo.fullName,
       defaultBranch: "main", role: "viewer", accountRole: null }]);
+    assert.deepEqual(await listProjects(db, 2, [{ ...repo, installationId: 8 }]), []);
     assert.equal((await projectAccess(db, 2, repo.fullName, "member-token")).id, project.id);
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token", "editor"), /do not have access/);
     sqlite.prepare("UPDATE project_memberships SET role = 'editor' WHERE project_id = ? AND github_id = 2").run(project.id);
     assert.equal((await projectAccess(db, 2, repo.fullName, "member-token", "editor")).role, "editor");
-    globalThis.fetch = async () => Response.json({ id: 43 });
+    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
+      ? { repositories: [] } : { id: 42 });
+    await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token"), /no longer has access/);
+    globalThis.fetch = async url => Response.json(String(url).includes("/user/installations/")
+      ? { repositories: [{ id: 42 }] } : { id: 43 });
     await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token"), /identity changed/);
   } finally { globalThis.fetch = original; sqlite.close(); }
 });
@@ -406,5 +412,39 @@ test("GitHub authorization revocation invalidates only that user's sessions", as
     assert.equal(await readSession(sessions[0], db), null);
     assert.equal(await readSession(sessions[1], db), null);
     assert.equal((await readSession(sessions[2], db)).session.user.id, 2);
+  } finally { sqlite.close(); }
+});
+
+test("installation removal cancels only affected runs and requires relinking", async () => {
+  const { db, sqlite } = testDb();
+  try {
+    const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    const first = { id: 42, fullName: "owner/first", installationId: 7, defaultBranch: "main" };
+    const second = { id: 43, fullName: "owner/second", installationId: 7, defaultBranch: "main" };
+    const a = await linkProject(db, account, first);
+    const b = await linkProject(db, account, second);
+    for (const [id, project] of [["a", a], ["b", b]]) {
+      await recordSpec(db, project.id, 1,
+        { number: 1, path: `specs/${id}.md`, branch: `spec/${id}` }, chooseModel("gpt-6-sol"));
+      const specId = sqlite.prepare("SELECT id FROM specs WHERE project_id = ?").get(project.id).id;
+      sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, ?, ?, 'gpt-6-sol', 'openai', 'queued', 1)")
+        .run(id, specId, "a".repeat(40));
+    }
+    assert.deepEqual(await processInstallationLoss(db, { action: "removed", installation: { id: 7 },
+      repositories_removed: [{ id: 42 }] }, "installation_repositories", "removed-1"), { disconnected: true });
+    assert.equal(sqlite.prepare("SELECT installation_id FROM projects WHERE id = ?").get(a.id).installation_id, 0);
+    assert.equal(sqlite.prepare("SELECT installation_id FROM projects WHERE id = ?").get(b.id).installation_id, 7);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = 'a'").get().status, "cancelled");
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = 'b'").get().status, "queued");
+    assert.deepEqual((await listProjects(db, 1, [first, second])).map(project => project.repository), [second.fullName]);
+    await assert.rejects(projectAccess(db, 1, first.fullName, "token"), /do not have access/);
+    assert.equal((await linkProject(db, account, first)).id, a.id);
+    assert.deepEqual(await processInstallationLoss(db, { action: "removed", installation: { id: 7 },
+      repositories_removed: [{ id: 42 }] }, "installation_repositories", "removed-1"),
+    { disconnected: true, duplicate: true });
+    assert.equal(sqlite.prepare("SELECT installation_id FROM projects WHERE id = ?").get(a.id).installation_id, 7);
+    await processInstallationLoss(db, { action: "deleted", installation: { id: 7 } }, "installation", "deleted-1");
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM projects WHERE installation_id = 7").get().count, 0);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = 'b'").get().status, "cancelled");
   } finally { sqlite.close(); }
 });

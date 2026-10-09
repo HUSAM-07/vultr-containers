@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { readRunCapability, runCapability } from "./capability.ts";
+import { gatewayRequest, readRunCapability, runCapability } from "./capability.ts";
 import { appJwt, installationToken, isGitReadRequest } from "./github.ts";
 
 test("run capability is scoped to its signed random ID", () => {
@@ -15,6 +15,20 @@ test("run capability is scoped to its signed random ID", () => {
   assert.equal(readRunCapability(null, secret), null);
   assert.throws(() => runCapability(id, "short"), /configuration/);
   assert.equal(createHmac("sha256", secret).update(id).digest("hex"), value.slice(37));
+});
+
+test("AI Gateway routing requires a valid run capability on the isolated host", () => {
+  const id = randomUUID();
+  const secret = "a".repeat(40);
+  const capability = runCapability(id, secret);
+  assert.deepEqual(gatewayRequest(new URL(`https://ai.fava.invalid/${capability}/openai/responses?stream=true`), secret),
+    { runId: id, path: "/openai/responses?stream=true" });
+  for (const value of [
+    `https://gateway.ai.cloudflare.com/${capability}/openai/responses`,
+    `https://ai.fava.invalid/${capability}/compat/chat/completions`,
+    `https://ai.fava.invalid/${capability.slice(0, -1)}${capability.endsWith("0") ? "1" : "0"}/openai/responses`,
+    `http://ai.fava.invalid/${capability}/openai/responses`,
+  ]) assert.equal(gatewayRequest(new URL(value), secret), null);
 });
 
 test("Git gateway accepts only upload-pack reads for the exact repository", () => {

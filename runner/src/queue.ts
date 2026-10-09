@@ -10,7 +10,7 @@ type RunRow = { id: string; repository: string; repositoryId: number; installati
 type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number };
 
 async function queued(env: Env) {
-  const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
+  const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND projects.installation_id > 0 AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
     .all<RunRow>();
   return result.results;
 }
@@ -45,6 +45,15 @@ async function loadRunMcpGrants(env: Env, runId: string) {
 }
 
 export async function reconcile(env: Env) {
+  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND error = 'GitHub installation access removed' AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
+    .all<{ id: string }>();
+  for (const run of cancelled.results) {
+    try {
+      await env.SANDBOX.getByName(run.id).stop();
+      await env.DB.prepare("UPDATE runs SET error = 'GitHub installation access removed; agent stopped' WHERE id = ? AND status = 'cancelled' AND error = 'GitHub installation access removed'")
+        .bind(run.id).run();
+    } catch (error) { console.error("Cancelled agent could not be stopped", run.id, error); }
+  }
   for (const run of await running(env)) {
     const { id, startedAt } = run;
     const sandbox = env.SANDBOX.getByName(id);

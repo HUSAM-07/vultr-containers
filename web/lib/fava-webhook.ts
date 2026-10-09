@@ -32,6 +32,40 @@ export async function processAuthorizationRevocation(db: Db, payload: unknown) {
   return { revoked: true };
 }
 
+export async function processInstallationLoss(db: Db, payload: unknown,
+  eventName: "installation" | "installation_repositories", deliveryId: string) {
+  if (!payload || typeof payload !== "object" || !/^[a-z0-9-]{1,100}$/i.test(deliveryId))
+    throw new GitHubError(400, "Invalid installation webhook");
+  const event = payload as { action?: unknown; installation?: { id?: unknown };
+    repositories_removed?: { id?: unknown }[] };
+  if (eventName === "installation" && !["deleted", "suspend"].includes(String(event.action)) ||
+    eventName === "installation_repositories" && event.action !== "removed") return { disconnected: false };
+  const installationId = event.installation?.id;
+  if (typeof installationId !== "number" || !Number.isSafeInteger(installationId) || installationId <= 0)
+    throw new GitHubError(400, "Invalid installation webhook");
+  const removed = eventName === "installation_repositories" ? event.repositories_removed : null;
+  if (eventName === "installation_repositories" && (!Array.isArray(removed) ||
+    removed.some(repo => !repo || !Number.isSafeInteger(repo.id) || (repo.id as number) <= 0)))
+    throw new GitHubError(400, "Invalid installation webhook");
+  const prior = await db.prepare("SELECT processed_at AS processedAt FROM webhook_deliveries WHERE delivery_id = ?")
+    .bind(deliveryId).first<{ processedAt: number | null }>();
+  if (prior?.processedAt) return { disconnected: true, duplicate: true };
+  const now = Date.now();
+  await db.prepare("INSERT OR IGNORE INTO webhook_deliveries (delivery_id, event_name, received_at) VALUES (?, ?, ?)")
+    .bind(deliveryId, eventName, now).run();
+  // GitHub sends an empty removal list when installation access changes from all to selected.
+  const repositoryIds = removed?.length ? removed.map(repo => repo.id as number) : [null];
+  await db.batch([
+    ...repositoryIds.map(repoId => db.prepare("UPDATE runs SET status = 'cancelled', error = 'GitHub installation access removed', completed_at = ? WHERE status IN ('queued', 'running') AND spec_id IN (SELECT specs.id FROM specs JOIN projects ON projects.id = specs.project_id WHERE projects.installation_id = ? AND (? IS NULL OR projects.github_repo_id = ?))")
+      .bind(now, installationId, repoId, repoId)),
+    ...repositoryIds.map(repoId => db.prepare("UPDATE projects SET installation_id = 0 WHERE installation_id = ? AND (? IS NULL OR github_repo_id = ?)")
+      .bind(installationId, repoId, repoId)),
+    db.prepare("UPDATE webhook_deliveries SET processed_at = ? WHERE delivery_id = ?")
+      .bind(now, deliveryId),
+  ]);
+  return { disconnected: true };
+}
+
 export function appJwt(clientId: string, privateKey: string) {
   const now = Math.floor(Date.now() / 1000);
   const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");

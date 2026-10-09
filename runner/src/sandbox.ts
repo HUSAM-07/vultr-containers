@@ -34,6 +34,9 @@ export class AgentSandbox extends DurableObject<Env> {
   async start(job: RunJob): Promise<"started" | "already-started"> {
     return this.ctx.blockConcurrencyWhile(async () => {
       if (await this.ctx.storage.get("job")) return "already-started";
+      const active = await this.env.DB.prepare("SELECT 1 FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.id = ? AND runs.status = 'running' AND projects.installation_id > 0")
+        .bind(job.id).first();
+      if (!active) throw Error("Run is no longer authorized");
       if (!/^[a-f0-9]{40}$/i.test(job.sha) || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(job.specPath) ||
         !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(job.repository) ||
         job.mcpGrantIds.length > 8 || job.mcpGrantIds.some(id => !/^[a-f0-9-]{36}$/i.test(id)))
@@ -56,6 +59,9 @@ export class AgentSandbox extends DurableObject<Env> {
           "Read repository instructions. Change only code needed for the acceptance criteria. Run relevant tests. " +
           "Do not edit specs, push commits, open pull requests, deploy, or access unrelated repositories. " +
           "Finish with a concise account of changed files and test results.";
+        const stillActive = await this.env.DB.prepare("SELECT 1 FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.id = ? AND runs.status = 'running' AND projects.installation_id > 0")
+          .bind(job.id).first();
+        if (!stillActive) throw Error("Run is no longer authorized");
         await this.container.exec(["/bin/sh", "-c", taskScript, "agent", taskDir,
           "timeout", "20m", ...this.agentCommand(job, prompt)],
         { cwd: repoDir, env: { ...trustEnv, ...this.agentEnv(job) }, stdout: "ignore", stderr: "ignore" });
@@ -138,7 +144,7 @@ export class AgentSandbox extends DurableObject<Env> {
   }
 
   async stop() {
-    await this.container.destroy();
+    if (this.container.running) await this.container.destroy();
   }
 
   async alarm() {
@@ -160,7 +166,7 @@ export class AgentSandbox extends DurableObject<Env> {
   }
 
   private agentCommand(job: RunJob, prompt: string) {
-    const gateway = `https://gateway.ai.cloudflare.com/v1/${this.env.AI_GATEWAY_ACCOUNT_ID}/${this.env.AI_GATEWAY_ID}`;
+    const gateway = `https://ai.fava.invalid/${runCapability(job.id, this.env.FAVA_RUN_SECRET)}`;
     const servers = Object.fromEntries(job.mcpGrantIds.map((id, index) =>
       [`fava_${index + 1}`, { type: "http", url: `https://mcp.fava.invalid/${id}`,
         headers: { Authorization: `Bearer ${runCapability(job.id, this.env.FAVA_RUN_SECRET)}` } }]));
@@ -180,9 +186,10 @@ export class AgentSandbox extends DurableObject<Env> {
 
   private agentEnv(job: RunJob): Record<string, string> {
     return job.provider === "anthropic" ? {
-      ANTHROPIC_BASE_URL: `https://gateway.ai.cloudflare.com/v1/${this.env.AI_GATEWAY_ACCOUNT_ID}/${this.env.AI_GATEWAY_ID}/anthropic`,
+      ANTHROPIC_BASE_URL: `https://ai.fava.invalid/${runCapability(job.id, this.env.FAVA_RUN_SECRET)}/anthropic`,
       ANTHROPIC_API_KEY: "provided-by-worker", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", IS_SANDBOX: "1",
-    } : job.mcpGrantIds.length ? { FAVA_MCP_RUN_CAPABILITY: runCapability(job.id, this.env.FAVA_RUN_SECRET) } : {};
+    } : { OPENAI_API_KEY: "provided-by-worker",
+      ...(job.mcpGrantIds.length ? { FAVA_MCP_RUN_CAPABILITY: runCapability(job.id, this.env.FAVA_RUN_SECRET) } : {}) };
   }
 
   private async readOptional(path: string) {
