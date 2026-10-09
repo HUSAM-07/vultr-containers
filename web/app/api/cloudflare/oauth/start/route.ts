@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
     const callback = new URL("/api/cloudflare/oauth/callback", request.nextUrl.origin).toString();
     const target = new URL("https://dash.cloudflare.com/oauth2/auth");
     for (const [key, value] of Object.entries({ response_type: "code", client_id: clientId,
-      redirect_uri: callback, scope: "workers-scripts.read workers-ci.write offline_access",
+      redirect_uri: callback, scope: "workers-scripts.content_read workers-ci.write offline_access",
       state, code_challenge: challenge, code_challenge_method: "S256" })) target.searchParams.set(key, value);
     const response = NextResponse.redirect(target);
     const context = { state, verifier, sessionId: auth.session.id, accountId: project.accountId,
