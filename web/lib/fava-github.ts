@@ -110,19 +110,24 @@ export async function listRepositories(token: string): Promise<Repository[]> {
 export async function importContext(token: string, name: string) {
   const repo = parseRepo(name);
   const metadata = await github<GitHubRepo>(token, `/repos/${repo}`);
+  const head = await github<{ commit: { sha: string } }>(token,
+    `/repos/${repo}/branches/${encodeURIComponent(metadata.default_branch)}`);
+  if (!/^[a-f0-9]{40}$/i.test(head.commit?.sha || ""))
+    throw new GitHubError(502, "GitHub returned an invalid branch commit");
+  const commitSha = head.commit.sha;
   const tree = await github<{ tree: { path: string; type: string }[]; truncated: boolean }>(token,
-    `/repos/${repo}/git/trees/${encodeURIComponent(metadata.default_branch)}?recursive=1`);
+    `/repos/${repo}/git/trees/${commitSha}?recursive=1`);
   const paths = tree.tree.filter(item => item.type === "blob").map(item => item.path);
   const candidates = ["README.md", "AGENTS.md", "package.json", "pyproject.toml", "Cargo.toml",
     "docs/architecture.md", "docs/README.md", "specs/README.md"];
   const files = await Promise.all(candidates.filter(path => paths.includes(path)).slice(0, 5).map(async path => {
     const file = await github<{ content: string; encoding: string; size: number }>(token,
-      `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(metadata.default_branch)}`);
+      `/repos/${repo}/contents/${path}?ref=${commitSha}`);
     if (file.encoding !== "base64" || file.size > 50_000) return null;
     const binary = atob(file.content.replace(/\s/g, ""));
     return { path, text: new TextDecoder().decode(Uint8Array.from(binary, character => character.charCodeAt(0))) };
   }));
-  return { repository: repo, defaultBranch: metadata.default_branch, paths: paths.slice(0, 400),
+  return { repository: repo, defaultBranch: metadata.default_branch, commitSha, paths: paths.slice(0, 400),
     truncated: tree.truncated || paths.length > 400, files: files.filter(file => file !== null) };
 }
 

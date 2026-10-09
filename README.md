@@ -2,7 +2,7 @@
 
 Fava's first connected workflow lets a person sign in through a GitHub App, link an installed repository to a personal Fava account, import its file map and project instructions, write a specification, and open a spec pull request. The specification is stored in GitHub under `specs/`. The [technical design](docs/fava-architecture.md) and editable [Draw.io diagram](docs/fava-platform.drawio) cover the planned merged-spec gate, agent harness, identity layer, and Cloudflare services.
 
-The landing page is `/`, the spec workspace is `/app`, and the existing Forge agent demo is `/demo`. The GitHub App is not registered yet, so account connection and a real spec PR still need live verification. The Cloudflare Workers build runs locally through vinext; no Cloudflare deployment has been made.
+The landing page is `/`, the spec workspace is `/app`, and the existing Forge agent demo is `/demo`. The GitHub App is not registered yet, so account connection and a real spec PR still need live verification. The Cloudflare Workers build runs locally through vinext; no Cloudflare deployment has been made. Repository context is read from one pinned commit and its revision is shown in the workspace.
 
 ## GitHub App setup
 
@@ -14,7 +14,7 @@ GitHub sign-in creates a personal account in D1. Users can create team workspace
 
 ## Cloudflare Workers build
 
-From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local`; it applies the seven D1 migrations when needed. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. The connected Cloudflare account already has the `fava-core` D1 database with all seven migrations applied. `npm run deploy:vinext` still needs the GitHub/session secrets and the R2 artifact bucket. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
+From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local`; it applies the eight D1 migrations when needed. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. The connected Cloudflare account already has the `fava-core` D1 database with all eight migrations applied. `npm run deploy:vinext` still needs the GitHub/session secrets and the R2 artifact bucket. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
 
 ### Connected Worker Previews
 

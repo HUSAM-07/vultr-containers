@@ -75,8 +75,10 @@ test("publishing a spec creates a branch, file, and PR in that order", async () 
 test("context import reads repository instructions and a bounded file map", async () => {
   const original = globalThis.fetch;
   const requests = [];
+  const commitSha = "a".repeat(40);
   const replies = [
     { default_branch: "main" },
+    { commit: { sha: commitSha } },
     { tree: [{ path: "README.md", type: "blob" }, { path: "AGENTS.md", type: "blob" },
       { path: ".fava/skills/review.md", type: "blob" }], truncated: false },
     { content: Buffer.from("Project overview").toString("base64"), encoding: "base64", size: 16 },
@@ -90,7 +92,22 @@ test("context import reads repository instructions and a bounded file map", asyn
     const context = await importContext("test-token", "owner/repo");
     assert.deepEqual(context.paths, ["README.md", "AGENTS.md", ".fava/skills/review.md"]);
     assert.deepEqual(context.files.map(file => file.path), ["README.md", "AGENTS.md"]);
-    assert.equal(requests.length, 4);
+    assert.equal(context.commitSha, commitSha);
+    assert.equal(requests[1], "https://api.github.com/repos/owner/repo/branches/main");
+    assert.equal(requests[2], `https://api.github.com/repos/owner/repo/git/trees/${commitSha}?recursive=1`);
+    assert.equal(requests[3], `https://api.github.com/repos/owner/repo/contents/README.md?ref=${commitSha}`);
+    assert.equal(requests[4], `https://api.github.com/repos/owner/repo/contents/AGENTS.md?ref=${commitSha}`);
+  } finally { globalThis.fetch = original; }
+});
+
+test("context import stops when GitHub does not return a commit SHA", async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => Response.json(++calls === 1
+    ? { default_branch: "main" } : { commit: { sha: "invalid" } });
+  try {
+    await assert.rejects(importContext("test-token", "owner/repo"), /invalid branch commit/);
+    assert.equal(calls, 2);
   } finally { globalThis.fetch = original; }
 });
 
