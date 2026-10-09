@@ -1,4 +1,5 @@
 import { appJwt, installationToken } from "./github.ts";
+import type { ConformanceReport } from "../../web/lib/fava-review.ts";
 import type { Env } from "./types";
 
 export type Upload = { path: string; mode: "100644" | "100755"; content: string | null };
@@ -15,9 +16,11 @@ async function github<T>(token: string, path: string, method = "GET", body?: unk
   return response.json() as Promise<T>;
 }
 
-export async function publishImplementation(env: Env, run: PublishRun, files: Upload[], summary: string) {
+export async function publishImplementation(env: Env, run: PublishRun, files: Upload[], summary: string,
+  review: ConformanceReport) {
   if (!/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(run.repository) ||
-    !/^[a-f0-9]{40}$/i.test(run.sha) || !/^[a-f0-9-]{36}$/.test(run.id) || files.length === 0)
+    !/^[a-f0-9]{40}$/i.test(run.sha) || !/^[a-f0-9-]{36}$/.test(run.id) || files.length === 0 ||
+    !review.pass || !review.evidence.length)
     throw Error("Invalid implementation source");
   const token = await installationToken(appJwt(env.GITHUB_APP_CLIENT_ID, env.GITHUB_APP_PRIVATE_KEY),
     run.installationId, run.repositoryId, "publish");
@@ -69,7 +72,8 @@ export async function publishImplementation(env: Env, run: PublishRun, files: Up
     title: `impl: spec #${run.specPullNumber}`, head: branch, base: run.defaultBranch, draft: true,
     body: `Implements [spec #${run.specPullNumber}](https://github.com/${run.repository}/pull/${run.specPullNumber}) from \`${run.specPath}\`.\n\n` +
       `Pinned source: \`${run.sha}\`\n\nRun: \`${run.id}\`\n\nAgent summary:\n${summary.slice(0, 1000)}\n\n` +
-      "Automated spec review passed. Inspect the review report and run artifacts in Fava before approving this draft.",
+      `Automated spec review evidence (model-generated):\n${review.evidence.map(item => `- ${item.replace(/\s+/g, " ").trim()}`).join("\n")}\n\n` +
+      "Inspect the full review report and run artifacts in Fava before approving this draft. Test results and Preview availability must be checked separately.",
   });
   if (!pull) throw Error("Could not open implementation pull request");
   return { branch, sha: ref.object.sha, pullNumber: pull.number, url: pull.html_url };

@@ -105,7 +105,7 @@ export async function reconcile(env: Env) {
         await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
         continue;
       }
-      const published = await publishImplementation(env, run, await sandbox.changes(), status.result);
+      const published = await publishImplementation(env, run, await sandbox.changes(), status.result, review);
       await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, implementation_sha = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
         .bind(status.result.slice(0, 2000), prefix, published.branch, published.sha, published.pullNumber, Date.now(), id).run();
     } catch (error) {

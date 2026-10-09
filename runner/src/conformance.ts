@@ -1,24 +1,9 @@
 import type { Env } from "./types.ts";
-
-type Report = { pass: boolean; unmet: string[]; unrelated: string[]; evidence: string[] };
+import { parseConformanceReport, ReviewError, type ConformanceReport } from "../../web/lib/fava-review.ts";
+export { parseConformanceReport, ReviewError } from "../../web/lib/fava-review.ts";
 type ReviewRun = { provider: string; model: string };
 
-export class ReviewError extends Error {}
-
-function validList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length <= 25 && value.every(item => typeof item === "string" && item.length <= 300);
-}
-
-export function parseConformanceReport(report: unknown): Report {
-  if (!report || typeof report !== "object" || !("pass" in report) || typeof report.pass !== "boolean" ||
-    !("unmet" in report) || !validList(report.unmet) || !("unrelated" in report) || !validList(report.unrelated) ||
-    !("evidence" in report) || !validList(report.evidence) ||
-    (report.pass && (report.unmet.length > 0 || report.unrelated.length > 0 || report.evidence.length === 0)))
-    throw new ReviewError("Spec review model returned an inconsistent verdict");
-  return report as Report;
-}
-
-export async function reviewConformance(env: Env, run: ReviewRun, spec: string, diff: string): Promise<Report> {
+export async function reviewConformance(env: Env, run: ReviewRun, spec: string, diff: string): Promise<ConformanceReport> {
   // shortcut: large diffs need file-by-file review before they can pass this gate.
   if (!spec || spec.length > 45_000 || !diff || diff.length > 200_000)
     return { pass: false, unmet: ["Spec review requires a nonempty spec and diff under 200 KB"], unrelated: [], evidence: [] };
