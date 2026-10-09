@@ -18,8 +18,6 @@ export default defineConfig({
       GITHUB_APP_SLUG: bindings.secret(),
       GITHUB_APP_PRIVATE_KEY: bindings.secret(),
       GITHUB_WEBHOOK_SECRET: bindings.secret(),
-      CLOUDFLARE_OAUTH_CLIENT_ID: bindings.secret(),
-      CLOUDFLARE_OAUTH_CLIENT_SECRET: bindings.secret(),
     },
   }),
 });
