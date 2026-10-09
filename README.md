@@ -1,4 +1,22 @@
-# Forge — Vultr Agent Rush
+# Fava — spec-first software building
+
+Fava's first connected workflow lets a person sign in through a GitHub App, choose an installed repository, import its file map and project instructions, write a specification, and open a spec pull request. The specification is stored in GitHub under `specs/`. The [technical design](docs/fava-architecture.md) and editable [Draw.io diagram](docs/fava-platform.drawio) cover the planned merged-spec gate, agent harness, identity layer, and Cloudflare services.
+
+The landing page is `/`, the spec workspace is `/app`, and the existing Forge agent demo is `/demo`. The GitHub App is not registered yet, so account connection and a real spec PR still need live verification. The Cloudflare Workers build runs locally through vinext; no Cloudflare deployment has been made.
+
+## GitHub App setup
+
+1. Register a GitHub App with callback URL `http://localhost:3000/api/github/auth/callback` for local development. Give it repository **Metadata: read**, **Contents: read/write**, and **Pull requests: read/write**. Enable expiring user access tokens. Install it only on repositories you want Fava to access.
+2. Copy `web/.env.example` to `web/.env.local`. Set `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` from the App settings. Generate a random `FAVA_SESSION_SECRET` of at least 32 characters. Keep all four values out of Git.
+3. Start the web app with `npm run dev:web`, open `http://localhost:3000/app`, connect GitHub, choose an installed repository, and create a spec PR. The repository needs a nonempty default branch.
+
+The current session uses an encrypted, HTTP-only cookie. It is a local first step; the multi-tenant account and role store described in the architecture document is still pending.
+
+## Cloudflare Workers build
+
+From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. This serves the built Worker at `http://localhost:3001`. `npm run deploy:vinext` is configured for a Cloudflare account once that account is signed in and secrets are set. The existing Next.js and Vercel path remains usable while Cloudflare deployment is being completed.
+
+## Forge — Vultr Agent Rush demo
 
 Product task manager and sandboxed coding agent for the [Vultr: Agent Rush Hackathon](https://lablab.ai/ai-hackathons/vultr-hackathon). UI tasks can produce a static HTML preview from code executed inside the container. [Requirements and ideas](competition-constraints-and-requirements.md).
 
@@ -11,9 +29,9 @@ Requires Node 24+ and Docker for executing agent code. The containment demo does
 3. Pull the sandbox image: `docker pull python:3.12-alpine`.
 4. Start the backend: `set -a; source server/.env; set +a; npm run dev:api`.
 5. In another terminal: `cd web && npm install && npm run dev`.
-6. Open `http://localhost:3000`.
+6. Open `http://localhost:3000/demo`.
 
-`npm test` checks plan validation, Docker isolation flags, both inference routes, visitor session isolation, and preview extraction; `npm run build` builds the frontend. The opening conversation and repository names are visual examples until a real task is selected.
+`npm test` checks plan validation, Docker isolation flags, inference routes, visitor session isolation, preview extraction, spec validation and publishing, and encrypted sessions. `npm run build` builds the Next.js frontend. The Forge conversation and repository names are visual examples until a real task is selected.
 
 ## Deploy
 

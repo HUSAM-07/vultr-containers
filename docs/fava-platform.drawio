@@ -1,0 +1,33 @@
+<mxfile host="app.diagrams.net" modified="2026-10-09T00:00:00.000Z" agent="Fava" version="24.7.17" type="device">
+  <diagram id="fava-platform" name="Fava platform">
+    <mxGraphModel dx="1600" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="ui" value="Fava web UI + API&#xa;Cloudflare Workers / vinext" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#2563eb;fontSize=16;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="80" y="90" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="github" value="GitHub App&#xa;OAuth + installations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=16;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="430" y="90" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="repo" value="GitHub repository&#xa;specs/ + .fava/skills/ + code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=16;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="780" y="90" width="310" height="90" as="geometry"/></mxCell>
+        <mxCell id="d1" value="D1&#xa;identity · projects · specs · runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=15;" vertex="1" parent="1"><mxGeometry x="80" y="310" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="kv" value="KV&#xa;short-lived auth/cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=15;" vertex="1" parent="1"><mxGeometry x="80" y="450" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="webhook" value="Verified webhook&#xa;spec PR merged" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fef9c3;strokeColor=#ca8a04;fontSize=15;" vertex="1" parent="1"><mxGeometry x="430" y="310" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="queue" value="Queues + Workflows&#xa;durable spec-to-PR lifecycle" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fef9c3;strokeColor=#ca8a04;fontSize=15;" vertex="1" parent="1"><mxGeometry x="780" y="310" width="310" height="90" as="geometry"/></mxCell>
+        <mxCell id="sandbox" value="Sandbox + Containers&#xa;isolated Git workspace / tool calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fae8ff;strokeColor=#a21caf;fontSize=15;" vertex="1" parent="1"><mxGeometry x="780" y="530" width="310" height="90" as="geometry"/></mxCell>
+        <mxCell id="models" value="AI Gateway + model adapters&#xa;Codex · Claude · others" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fae8ff;strokeColor=#a21caf;fontSize=15;" vertex="1" parent="1"><mxGeometry x="430" y="530" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="r2" value="R2&#xa;context snapshots · logs · artifacts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=15;" vertex="1" parent="1"><mxGeometry x="80" y="670" width="240" height="90" as="geometry"/></mxCell>
+        <mxCell id="preview" value="Preview + deployment&#xa;Workers for Platforms / Browser Run" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#2563eb;fontSize=15;" vertex="1" parent="1"><mxGeometry x="780" y="750" width="310" height="90" as="geometry"/></mxCell>
+        <mxCell id="external" value="Optional deployment adapters&#xa;AWS · GCP · project MCP grants" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3f4f6;strokeColor=#6b7280;fontSize=15;" vertex="1" parent="1"><mxGeometry x="1180" y="750" width="310" height="90" as="geometry"/></mxCell>
+        <mxCell id="e1" value="sign in / list" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="ui" target="github"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" value="import + spec PR" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="github" target="repo"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" value="tenant state" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="ui" target="d1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" value="revocable cache" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d1" target="kv"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" value="merge event" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="repo" target="webhook"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" value="deduplicated intent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="webhook" target="queue"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="queue" target="sandbox"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" value="inference" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="sandbox" target="models"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e9" value="artifacts" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="sandbox" target="r2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e10" value="preview URL" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="sandbox" target="preview"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e11" value="optional" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="preview" target="external"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
