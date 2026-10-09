@@ -12,6 +12,39 @@ export function parseRepo(value: string) {
   return value;
 }
 
+export function validSkillPath(path: string) {
+  return /^\.fava\/skills\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md$/.test(path);
+}
+
+export async function listSkillFiles(token: string, name: string, ref: string) {
+  const repo = parseRepo(name);
+  try {
+    const files = await github<{ path: string; type: string; size: number }[]>(token,
+      `/repos/${repo}/contents/.fava/skills?ref=${encodeURIComponent(ref)}`);
+    if (!Array.isArray(files)) throw new GitHubError(400, "Expected a .fava/skills directory");
+    return files.filter(file => file.type === "file" && validSkillPath(file.path) && file.size >= 20 && file.size <= 12_000)
+      .map(file => ({ path: file.path, size: file.size }));
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404) return [];
+    throw error;
+  }
+}
+
+export async function readSkillFile(token: string, name: string, path: string, sha: string) {
+  const repo = parseRepo(name);
+  if (!validSkillPath(path) || !/^[a-f0-9]{40}$/i.test(sha)) throw new GitHubError(400, "Invalid skill source");
+  const file = await github<{ content: string; encoding: string; size: number }>(token,
+    `/repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`);
+  if (file.encoding !== "base64" || file.size < 20 || file.size > 12_000)
+    throw new GitHubError(400, "Skill must be a 20–12,000 byte Markdown file");
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(
+      Uint8Array.from(atob(file.content.replace(/\s/g, "")), character => character.charCodeAt(0)));
+    if (new TextEncoder().encode(content).length !== file.size) throw Error("Size mismatch");
+    return content;
+  } catch { throw new GitHubError(400, "Skill file must contain valid UTF-8 Markdown"); }
+}
+
 export function slug(title: string) {
   const value = title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 55).replace(/-$/, "");
   if (!value) throw new GitHubError(400, "Give the specification a descriptive title");
@@ -53,7 +86,7 @@ export async function github<T>(token: string, path: string, method = "GET", bod
     body: body ? JSON.stringify(body) : undefined, cache: "no-store",
   });
   if (!response.ok) {
-    const value = await response.json().catch(() => ({}));
+    const value = await response.json().catch(() => ({})) as { message?: unknown };
     throw new GitHubError(response.status, typeof value.message === "string" ? value.message : "GitHub request failed");
   }
   return response.json() as Promise<T>;

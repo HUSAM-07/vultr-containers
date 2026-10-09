@@ -81,3 +81,13 @@ if (previewTables.every(name => currentPreviewTables.includes(name))) {
   if (!previewTables.every(name => installed.includes(name))) throw Error("Local Cloudflare Preview migration verification failed");
   console.log("Local Cloudflare Preview migration applied");
 }
+
+const runSkillTable = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_skills'")).rows.length > 0;
+if (runSkillTable) {
+  console.log("Local run-skills migration is already applied");
+} else {
+  await query(await readFile(new URL("./0006_run_skills.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_skills'")).rows.length > 0;
+  if (!installed) throw Error("Local run-skills migration verification failed");
+  console.log("Local run-skills migration applied");
+}

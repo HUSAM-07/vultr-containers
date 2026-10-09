@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
 import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec } from "./fava-db.ts";
-import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec } from "./fava-github.ts";
+import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { seal, unseal } from "./fava-session.ts";
@@ -18,6 +18,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0002_spec_model.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0003_run_output.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0004_run_started_at.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0006_run_skills.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -102,6 +103,12 @@ test("repository listing retains the installation needed to link a project", asy
   } finally { globalThis.fetch = original; }
 });
 
+test("skill paths are constrained to versioned repository Markdown files", () => {
+  assert.equal(validSkillPath(".fava/skills/review.md"), true);
+  assert.equal(validSkillPath(".fava/skills/../secrets.md"), false);
+  assert.equal(validSkillPath("specs/review.md"), false);
+});
+
 test("JSON reader rejects malformed and streamed oversized bodies", async () => {
   await assert.rejects(readJson(new Request("http://localhost", { method: "POST", body: "{" }), 1000),
     error => error.status === 400);
@@ -137,6 +144,8 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
   try {
     const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
     const project = await linkProject(db, account, { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
+    sqlite.prepare("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill-1', ?, NULL, 42, '.fava/skills/review.md', ?, 1)")
+      .run(account, "b".repeat(40));
     const specId = await recordSpec(db, project.id, 1,
       { number: 4, path: "specs/export-123.md", branch: "spec/export-123" }, chooseModel("gpt-6-sol"));
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -183,15 +192,18 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     assert.equal(sqlite.prepare("SELECT status FROM specs WHERE id = ?").get(specId).status, "merged");
     assert.deepEqual({ ...sqlite.prepare("SELECT spec_id AS specId, merged_commit_sha AS sha, model, provider, status FROM runs WHERE spec_id = ?").get(specId) },
       { specId, sha: "a".repeat(40), model: "gpt-6-sol", provider: "openai", status: "queued" });
+    assert.equal(sqlite.prepare("SELECT commit_sha AS sha FROM run_skills").get().sha, "b".repeat(40));
     assert.equal((await listRuns(db, account, "owner/repo")).length, 1);
     assert.deepEqual(await listRuns(db, "github:2", "owner/repo"), []);
     assert.equal(sqlite.prepare("SELECT processed_at FROM webhook_deliveries WHERE delivery_id = 'delivery-1'").get().processed_at > 0, true);
     assert.deepEqual(await processPullRequestEvent(db, event, "delivery-1",
       { clientId: "Iv1.test", privateKey: pem }), { recorded: true, duplicate: true });
     assert.equal(requests.length, 3);
+    sqlite.exec(`UPDATE skills SET commit_sha = '${"c".repeat(40)}' WHERE id = 'skill-1'`);
     assert.deepEqual(await processPullRequestEvent(db, event, "delivery-1-redelivery",
       { clientId: "Iv1.test", privateKey: pem }), { recorded: true, status: "merged", specIds: [specId] });
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM runs WHERE spec_id = ?").get(specId).count, 1);
+    assert.equal(sqlite.prepare("SELECT commit_sha AS sha FROM run_skills").get().sha, "b".repeat(40));
     await recordSpec(db, project.id, 1,
       { number: 5, path: "specs/unsafe-123.md", branch: "spec/unsafe-123" }, chooseModel("claude-sonnet-5"));
     await assert.rejects(processPullRequestEvent(db, { ...event,

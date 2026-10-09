@@ -10,7 +10,7 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql"])
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql"])
     sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
   sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
   sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")
@@ -72,7 +72,7 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     await dispatch(env);
     assert.equal(starts.length, 1);
     assert.deepEqual(starts[0], { id: runId, repository: "owner/private", repositoryId: 42,
-      installationId: 7, sha: "a".repeat(40), specPath: "specs/change.md", provider: "openai", model: "gpt-6-sol" });
+      installationId: 7, sha: "a".repeat(40), specPath: "specs/change.md", provider: "openai", model: "gpt-6-sol", skills: "" });
     await dispatch(env);
     assert.equal(starts.length, 1);
     setTask({ state: "succeeded", result: "Built requested change" });
@@ -94,6 +94,24 @@ test("unmerged specs cannot dispatch even when a run row exists", async () => {
     assert.deepEqual(starts, []);
     assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "queued");
   } finally { sqlite.close(); }
+});
+
+test("dispatch loads the skill version pinned when the spec merged", async () => {
+  const { sqlite, env, starts } = fixture();
+  const original = globalThis.fetch;
+  try {
+    sqlite.exec("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 42, '.fava/skills/review.md', 'cccccccccccccccccccccccccccccccccccccccc', 1)");
+    sqlite.prepare("INSERT INTO run_skills VALUES (?, 'skill', ?)").run(runId, "b".repeat(40));
+    const content = "Review tests against the merged specification.";
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/access_tokens")) return Response.json({ token: "skill-token" });
+      assert.equal(String(url), `https://api.github.com/repos/owner/private/contents/.fava/skills/review.md?ref=${"b".repeat(40)}`);
+      return Response.json({ content: Buffer.from(content).toString("base64"), encoding: "base64", size: Buffer.byteLength(content) });
+    };
+    await dispatch(env);
+    assert.match(starts[0].skills, /Review tests against the merged specification/);
+    assert.match(starts[0].skills, new RegExp(`@${"b".repeat(40)}`));
+  } finally { globalThis.fetch = original; sqlite.close(); }
 });
 
 test("stale running jobs fail and their containers stop", async () => {

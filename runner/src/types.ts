@@ -21,4 +21,5 @@ export type RunJob = {
   specPath: string;
   provider: "openai" | "anthropic";
   model: "gpt-6-sol" | "claude-sonnet-5";
+  skills: string;
 };

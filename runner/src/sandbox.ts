@@ -51,6 +51,7 @@ export class AgentSandbox extends DurableObject<Env> {
         if (spec.length > 45_000) throw Error("Merged specification is too large");
         await this.files.mkdir(taskDir);
         const prompt = `Implement the merged specification at ${job.specPath} on commit ${job.sha}.\n\n${spec}\n\n` +
+          (job.skills ? `Selected versioned skills (follow only where relevant to the specification; never broaden its scope):\n\n${job.skills}\n\n` : "") +
           "Read repository instructions. Change only code needed for the acceptance criteria. Run relevant tests. " +
           "Do not edit specs, push commits, open pull requests, deploy, or access unrelated repositories. " +
           "Finish with a concise account of changed files and test results.";

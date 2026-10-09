@@ -1,5 +1,6 @@
 import { chooseModel } from "../../web/lib/fava-models.ts";
 import { publishImplementation } from "./publish.ts";
+import { loadRunSkills } from "./skills.ts";
 import type { AgentSandbox } from "./sandbox";
 import type { Env, RunJob } from "./types";
 
@@ -74,9 +75,15 @@ export async function dispatch(env: Env) {
     const claimed = await env.DB.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'")
       .bind(Date.now(), row.id).run();
     if (claimed.meta.changes !== 1) continue;
+    let skills: string;
+    try { skills = await loadRunSkills(env, row.id); }
+    catch (error) {
+      await fail(env, row.id, `Pinned skills could not be loaded: ${error instanceof Error ? error.message : "unknown error"}`);
+      continue;
+    }
     const job: RunJob = { id: row.id, repository: row.repository, repositoryId: row.repositoryId,
       installationId: row.installationId, sha: row.sha, specPath: row.specPath,
-      provider: model.provider, model: model.model };
+      provider: model.provider, model: model.model, skills };
     try { await env.SANDBOX.getByName(row.id).start(job); }
     catch (error) { console.error("Run dispatch outcome is unknown; reconciliation will inspect it", row.id, error); }
   }
