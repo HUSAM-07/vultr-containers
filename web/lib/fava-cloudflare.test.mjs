@@ -7,7 +7,8 @@ test("Cloudflare token is encrypted and round trips", async () => {
   const encrypted = await encryptToken("secret-token-that-must-not-appear-in-d1");
   assert.doesNotMatch(encrypted, /secret-token/);
   assert.equal(await decryptToken(encrypted), "secret-token-that-must-not-appear-in-d1");
-  await assert.rejects(decryptToken(encrypted.slice(0, -1) + "x"), CloudflareError);
+  const [iv, data] = encrypted.split(".");
+  await assert.rejects(decryptToken(`${iv}.${data[0] === "A" ? "B" : "A"}${data.slice(1)}`), CloudflareError);
 });
 
 test("Preview config rejects shared D1 and missing Preview bindings", () => {
