@@ -1,6 +1,10 @@
 server/data/
 web/.next/
 web/node_modules/
+runner/node_modules/
+runner/.wrangler/
+runner/.dev.vars
+runner/.secrets.json
 web/.env.local
 .env
 .DS_Store

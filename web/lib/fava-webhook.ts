@@ -89,7 +89,7 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
   await db.batch([
     ...matching.map(spec => db.prepare("UPDATE specs SET status = 'merged', merged_commit_sha = ? WHERE id = ?")
       .bind(pull.merge_commit_sha, spec.id)),
-    // shortcut: queued runs stay in D1 until the Sandbox dispatcher is deployed; retry them from a scheduled worker.
+    // shortcut: queued runs stay in D1 until the scheduled runner is deployed; it claims them on its next tick.
     ...matching.filter(spec => spec.provider && spec.model).map(spec =>
       db.prepare("INSERT OR IGNORE INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)")
         .bind(crypto.randomUUID(), spec.id, pull.merge_commit_sha, spec.model, spec.provider, Date.now())),

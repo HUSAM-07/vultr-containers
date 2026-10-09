@@ -36,8 +36,9 @@ export async function listProjects(db: Db, accountId: string) {
 }
 
 export async function listRuns(db: Db, accountId: string, repository: string) {
-  const result = await db.prepare("SELECT runs.id, runs.status, runs.model, runs.provider, runs.merged_commit_sha AS mergedCommitSha, runs.created_at AS createdAt, runs.pull_number AS pullNumber, runs.preview_url AS previewUrl, specs.pull_number AS specPullNumber, specs.path AS specPath FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE projects.account_id = ? AND projects.full_name = ? ORDER BY runs.created_at DESC LIMIT 20")
+  const result = await db.prepare("SELECT runs.id, runs.status, runs.model, runs.provider, runs.summary, runs.error, runs.artifact_key AS artifactKey, runs.merged_commit_sha AS mergedCommitSha, runs.created_at AS createdAt, runs.pull_number AS pullNumber, runs.preview_url AS previewUrl, specs.pull_number AS specPullNumber, specs.path AS specPath FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE projects.account_id = ? AND projects.full_name = ? ORDER BY runs.created_at DESC LIMIT 20")
     .bind(accountId, repository).all<{ id: string; status: string; model: string; provider: string;
+      summary: string | null; error: string | null; artifactKey: string | null;
       mergedCommitSha: string; createdAt: number; pullNumber: number | null; previewUrl: string | null;
       specPullNumber: number; specPath: string }>();
   return result.results;

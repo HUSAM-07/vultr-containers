@@ -45,3 +45,26 @@ if (modelColumns.every(name => specColumns.includes(name))) {
   if (!modelColumns.every(name => installed.includes(name))) throw Error("Local model migration verification failed");
   console.log("Local Fava model migration applied");
 }
+
+const runColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+const outputColumns = ["summary", "error", "artifact_key"];
+if (outputColumns.every(name => runColumns.includes(name))) {
+  console.log("Local Fava run-output migration is already applied");
+} else if (outputColumns.some(name => runColumns.includes(name))) {
+  throw Error("Local D1 has a partial run-output migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0003_run_output.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  if (!outputColumns.every(name => installed.includes(name))) throw Error("Local run-output migration verification failed");
+  console.log("Local Fava run-output migration applied");
+}
+
+const startColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+if (startColumns.includes("started_at")) {
+  console.log("Local Fava run-start migration is already applied");
+} else {
+  await query(await readFile(new URL("./0004_run_started_at.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  if (!installed.includes("started_at")) throw Error("Local run-start migration verification failed");
+  console.log("Local Fava run-start migration applied");
+}

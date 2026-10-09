@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fava-runner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": { "AI_GATEWAY_ID": "default" },
+  "secrets": {
+    "required": ["AI_GATEWAY_ACCOUNT_ID", "AI_GATEWAY_TOKEN", "GITHUB_APP_CLIENT_ID", "GITHUB_APP_PRIVATE_KEY", "FAVA_RUN_SECRET"]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "fava-core", "database_id": "00000000-0000-0000-0000-000000000000" }
+  ],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "fava-run-artifacts" }],
+  "containers": [
+    { "class_name": "AgentSandbox", "scheduling_policy": "durable_object", "images": { "agent": { "dockerfile": "./Dockerfile" } } }
+  ],
+  "durable_objects": { "bindings": [{ "class_name": "AgentSandbox", "name": "SANDBOX" }] },
+  "exports": { "AgentSandbox": { "type": "durable-object", "storage": "sqlite" } }
+}

@@ -16,6 +16,8 @@ function testDb() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0001_core.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0002_spec_model.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0003_run_output.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0004_run_started_at.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
