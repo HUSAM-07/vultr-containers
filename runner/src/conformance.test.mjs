@@ -42,7 +42,7 @@ test("Claude spec review uses Anthropic Messages and reads its text block", asyn
       return Response.json({ content: [{ type: "text", text: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Export added"] }) }] });
     };
     const report = await reviewConformance(env, { provider: "anthropic", model: "claude-sonnet-5" },
-      "Export visible rows", "diff --git a/export.ts b/export.ts\n+exportVisibleRows();");
+      "## Acceptance criteria\n\n- Export visible rows", "diff --git a/export.ts b/export.ts\n+exportVisibleRows();");
     assert.equal(report.pass, true);
   } finally { globalThis.fetch = original; }
 });

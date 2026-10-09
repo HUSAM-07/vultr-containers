@@ -1,6 +1,6 @@
 export function acceptanceCriteria(spec: string): string[] {
   const section = spec.split(/^## /m).slice(1).find(block => block.split("\n", 1)[0].trim().toLowerCase() === "acceptance criteria");
-  const body = (section ? section.slice(section.indexOf("\n") + 1) : spec).trim();
+  const body = section?.split("\n").slice(1).join("\n").trim() || "";
   if (!body) return [];
   const bullets = [...body.matchAll(/^ {0,3}(?:[-*]|\d+[.)])[ \t]+/gm)];
   return bullets.length ? bullets.map((bullet, index) => body.slice(

@@ -7,6 +7,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
+import { acceptanceCriteria } from "./fava-criteria.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -110,6 +111,13 @@ test("spec validation rejects template guidance", () => {
   assert.equal(validateSpec("Export dashboard", spec).title, "Export dashboard");
   assert.throws(() => validateSpec("Export dashboard", spec.replace("- The CSV includes exactly the visible rows and columns.",
     Array.from({ length: 26 }, (_, index) => `- Check export behavior ${index + 1}.`).join("\n"))), /at most 25 acceptance criteria/);
+});
+
+test("acceptance criteria stop at the next section and require their own heading", () => {
+  assert.deepEqual(acceptanceCriteria(`${spec}\n## Notes\n\n- This is not a criterion.\n`),
+    ["The CSV includes exactly the visible rows and columns."]);
+  assert.deepEqual(acceptanceCriteria("## Outcome\n\n- A desired result.\n"), []);
+  assert.deepEqual(acceptanceCriteria("## Acceptance criteria"), []);
 });
 
 test("new repositories are initialized for spec branches and names are validated before creation", async () => {
