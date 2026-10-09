@@ -18,6 +18,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
       - run: npm test
+      - run: python3 -m unittest infra/cloudflare/test_schema.py
       - run: npm run lint --prefix web
       - run: npm run typecheck --prefix web
       - run: npm run build:vinext --prefix web -- --logLevel=error

@@ -4,3 +4,4 @@ web/node_modules/
 web/.env.local
 .env
 .DS_Store
+__pycache__/

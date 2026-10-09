@@ -31,6 +31,8 @@ The current implementation covers steps 1–3 locally once a GitHub App is confi
 
 Cloudflare service choice follows the workload: KV is a cache, D1 is the durable relational store, and R2 holds large blobs. Deploying every Cloudflare product would add cost and failure paths without satisfying a user requirement. AWS and GCP are optional deployment adapters, not dependencies of the Cloudflare-native path. Their connectors need scoped roles/service accounts and per-project consent; MCP servers run inside the project workspace, never in the browser.
 
+The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudflare/0001_core.sql). CI checks its relational constraints with SQLite. The app does not yet bind D1 or write these tables; account roles, revocation, and run state remain unimplemented at runtime.
+
 ## Identity and GitHub integration
 
 - GitHub App permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. Subscribe to `pull_request`, `installation`, `installation_repositories`, and `github_app_authorization` webhooks when the webhook worker exists.
