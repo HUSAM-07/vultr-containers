@@ -48,11 +48,15 @@ export async function GET(request: NextRequest) {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repository = request.nextUrl.searchParams.get("repo") || "";
-    const project = await projectAccess(env.DB, auth.session.user.id, repository, auth.session.token, "admin");
+    const project = await projectAccess(env.DB, auth.session.user.id, repository, auth.session.token);
+    const canManage = project.role === "owner" || project.role === "admin";
     const connection = await connectionFor(project.accountId);
     const preview = await env.DB.prepare("SELECT worker_name AS workerName, worker_tag AS workerTag, trigger_uuid AS triggerUuid FROM cloudflare_project_previews WHERE project_id = ? AND account_id = ?")
       .bind(project.id, project.accountId).first<{ workerName: string; workerTag: string; triggerUuid: string }>();
-    const { token, workers: available } = connection ? await workersFor(connection) : { token: "", workers: [] as Worker[] };
+    const token = connection ? await decryptToken(connection.token_ciphertext) : "";
+    const available = connection && canManage
+      ? await cloudflare<Worker[]>(token, `/accounts/${connection.cloudflare_account_id}/workers/scripts`)
+      : [];
     const workers = available.map(worker => ({ name: worker.id, tag: worker.tag }));
     let builds: ReturnType<typeof recentPreviewBuilds> = [];
     if (connection && preview) {
@@ -68,8 +72,9 @@ export async function GET(request: NextRequest) {
         } catch { return build; }
       }));
     }
-    const response = NextResponse.json({ connected: Boolean(connection),
-      accountId: connection?.cloudflare_account_id || null, workers, preview, builds });
+    const response = NextResponse.json({ connected: Boolean(connection), canManage,
+      accountId: canManage ? connection?.cloudflare_account_id || null : null, workers,
+      preview: canManage || !preview ? preview : { workerName: preview.workerName }, builds });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;
   } catch (error) { return errorResponse(error); }

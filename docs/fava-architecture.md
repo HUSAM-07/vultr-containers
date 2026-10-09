@@ -59,4 +59,4 @@ Project skills live in `.fava/skills/*.md` in the target repository. A workspace
 
 ## Current external blockers
 
-The GitHub account has no registered Fava GitHub App; its credentials must be configured before sign-in and repository import work live. Wrangler is authenticated to the Cloudflare account, and `fava-core` D1 is provisioned with six migrations, but the account has no Fava Worker and R2 is disabled. The available Cloudflare MCP serves documentation rather than account management. No live Fava Worker or branch Preview has been provisioned, so the code and diagram do not claim those external connections work.
+The GitHub account has no registered Fava GitHub App; its credentials must be configured before sign-in and repository import work live. Wrangler is authenticated to the Cloudflare account, and `fava-core` D1 is provisioned with seven migrations, but the account has no Fava Worker and R2 is disabled. The available Cloudflare MCP serves documentation rather than account management. No live Fava Worker or branch Preview has been provisioned, so the code and diagram do not claim those external connections work.

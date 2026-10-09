@@ -198,10 +198,9 @@ export default function WorkspacePage() {
         {session?.connected && repo && selectedProject && <>
           <SkillsPanel key={`skills-${repo}`} repository={repo} canEdit={selectedProject.role !== "viewer"}
             canManageWorkspace={selectedProject.accountRole === "owner" || selectedProject.accountRole === "admin"} />
-          {(selectedProject.role === "owner" || selectedProject.role === "admin") && <>
-            <ProjectMembersPanel key={`members-${repo}`} repository={repo} />
-            <CloudflarePreviewPanel key={`preview-${repo}`} repository={repo} />
-          </>}
+          {(selectedProject.role === "owner" || selectedProject.role === "admin") &&
+            <ProjectMembersPanel key={`members-${repo}`} repository={repo} />}
+          <CloudflarePreviewPanel key={`preview-${repo}`} repository={repo} />
         </>}
         <div className="mt-6 border-t border-separator-border pt-5"><a href="/demo" className="inline-flex items-center gap-2 text-body-medium text-text-secondary hover:text-text-primary">View the current agent demo <RiArrowRightLine className="size-4" aria-hidden /></a></div></aside>
     </div>
