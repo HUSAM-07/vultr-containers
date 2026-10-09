@@ -8,6 +8,7 @@ import { Button, ButtonLink } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { Textarea } from "@/components/base/textarea/textarea";
 import { CloudflarePreviewPanel } from "@/components/application/cloudflare-preview-panel";
+import { RunLog } from "@/components/application/run-log";
 import { McpGrantsPanel } from "@/components/application/mcp-grants-panel";
 import { ProjectMembersPanel } from "@/components/application/project-members-panel";
 import { SkillsPanel } from "@/components/application/skills-panel";
@@ -190,9 +191,10 @@ export default function WorkspacePage() {
               {run.summary && <p className="mt-2 text-body-regular text-text-secondary">{run.summary}</p>}
               {run.error && <p className="mt-2 text-body-regular text-text-error-primary">{run.error}</p>}
               {run.artifactKey && <div className="mt-2 flex flex-wrap gap-3">
-                {(run.status === "succeeded" || run.error?.startsWith("Spec review rejected") ? ["diff", "review", "stdout", "stderr"] : ["stdout", "stderr"]).map(kind =>
-                  <a key={kind} href={`/api/github/runs/${run.id}/artifact?kind=${kind}`} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">{kind === "diff" ? "Code diff" : kind === "review" ? "Spec review" : kind === "stdout" ? run.status === "running" ? "Agent log (live)" : "Agent log" : "Error log"}</a>)}
+                {(run.status === "succeeded" || run.error?.startsWith("Spec review rejected") ? ["diff", "review"] : []).map(kind =>
+                  <a key={kind} href={`/api/github/runs/${run.id}/artifact?kind=${kind}`} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">{kind === "diff" ? "Code diff" : "Spec review"}</a>)}
               </div>}
+              {run.artifactKey && <RunLog id={run.id} running={run.status === "running"} />}
               {run.previewUrl?.startsWith("https://") && <a href={run.previewUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Preview <RiExternalLinkLine className="size-4" aria-hidden /></a>}
             </li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">No implementation run has been queued for this project.</p>}
         </div>}
