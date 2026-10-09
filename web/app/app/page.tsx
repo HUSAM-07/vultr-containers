@@ -68,7 +68,7 @@ export default function WorkspacePage() {
       const [imported, proposals, recentRuns] = await Promise.all([
         json<Context>(`/api/github?action=context&repo=${selected}`),
         json<SpecProposal[]>(`/api/github?action=specs&repo=${selected}`),
-        json<AgentRun[]>(`/api/github?action=runs&repo=${selected}`),
+        json<AgentRun[]>(`/api/github?action=runs&repo=${selected}&refresh=1`),
       ]);
       if (requestId !== choiceId.current) return;
       setContext(imported); setSpecs(proposals); setRuns(recentRuns);
@@ -180,7 +180,7 @@ export default function WorkspacePage() {
         {context && <div className="mt-6 border-t border-separator-border pt-5">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-body-medium">Implementation runs</h3>
-            <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh implementation runs" onClick={() => json<AgentRun[]>(`/api/github?action=runs&repo=${encodeURIComponent(repo)}`).then(setRuns).catch(cause => setError((cause as Error).message))} />
+            <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh implementation runs" onClick={() => json<AgentRun[]>(`/api/github?action=runs&repo=${encodeURIComponent(repo)}&refresh=1`).then(setRuns).catch(cause => setError((cause as Error).message))} />
           </div>
           {runs.length ? <ul className="mt-3 space-y-2">{runs.map(run =>
             <li key={run.id} className="rounded-xl border border-border-button-default bg-background-primary-default p-3">

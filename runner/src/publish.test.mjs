@@ -35,7 +35,7 @@ test("publication retries reuse the pinned branch and existing draft PR", async 
     };
     assert.deepEqual(await publishImplementation(env, run,
       [{ path: "src/a.ts", mode: "100644", content: "YQ==" }], "Done"),
-    { branch: `impl/${id}`, pullNumber: 8, url: "https://github.com/owner/private/pull/8" });
+    { branch: `impl/${id}`, sha: head, pullNumber: 8, url: "https://github.com/owner/private/pull/8" });
     assert.equal(requests.length, 7);
     assert.equal(requests.every(([, method]) => method === "POST" || method === "GET"), true);
   } finally { globalThis.fetch = original; }

@@ -54,6 +54,7 @@ export async function publishImplementation(env: Env, run: PublishRun, files: Up
     await github(token, `${prefix}/git/refs`, "POST", { ref: `refs/heads/${branch}`, sha: commit.sha });
     ref = { object: { sha: commit.sha } };
   }
+  if (!/^[a-f0-9]{40}$/i.test(ref.object.sha)) throw Error("GitHub returned an invalid implementation commit");
   const [owner] = run.repository.split("/");
   const pulls = await github<{ number: number; html_url: string; state: string; head: { ref: string; sha: string };
     base: { ref: string } }[]>(token,
@@ -62,7 +63,7 @@ export async function publishImplementation(env: Env, run: PublishRun, files: Up
   if (existing) {
     if (existing.state !== "open" || existing.head.sha !== ref.object.sha)
       throw Error("Implementation pull request changed outside this run");
-    return { branch, pullNumber: existing.number, url: existing.html_url };
+    return { branch, sha: ref.object.sha, pullNumber: existing.number, url: existing.html_url };
   }
   const pull = await github<{ number: number; html_url: string }>(token, `${prefix}/pulls`, "POST", {
     title: `impl: spec #${run.specPullNumber}`, head: branch, base: run.defaultBranch, draft: true,
@@ -71,5 +72,5 @@ export async function publishImplementation(env: Env, run: PublishRun, files: Up
       "Automated spec review passed. Inspect the review report and run artifacts in Fava before approving this draft.",
   });
   if (!pull) throw Error("Could not open implementation pull request");
-  return { branch, pullNumber: pull.number, url: pull.html_url };
+  return { branch, sha: ref.object.sha, pullNumber: pull.number, url: pull.html_url };
 }

@@ -4,6 +4,7 @@ import { accountAccess, ensurePersonalAccount, linkProject, listProjects, listRu
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
+import { refreshRunPreviews } from "@/lib/fava-run-previews";
 import { clearSession, readSession, revokeSession, setSession } from "@/lib/fava-session";
 
 function fail(error: unknown) {
@@ -32,8 +33,13 @@ export async function GET(request: NextRequest) {
       await listRepositories(auth.session.token));
     else if (["runs", "context", "specs"].includes(action)) {
       const project = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token);
-      value = action === "runs" ? await listRuns(env.DB, project.accountId, project.repository)
-        : action === "context" ? await importContext(auth.session.token, project.repository)
+      if (action === "runs") {
+        const runs = await listRuns(env.DB, project.accountId, project.repository);
+        try { await refreshRunPreviews(env.DB, project.accountId, project.id, runs,
+          request.nextUrl.searchParams.get("refresh") === "1"); }
+        catch (error) { console.error("Run Preview refresh failed", project.id, error instanceof Error ? error.name : "unknown"); }
+        value = runs;
+      } else value = action === "context" ? await importContext(auth.session.token, project.repository)
         : await listSpecPullRequests(auth.session.token, project.repository);
     }
     if (!value) return NextResponse.json({ error: "Not found" }, { status: 404 });

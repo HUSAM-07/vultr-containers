@@ -111,3 +111,13 @@ if (runMcpGrants) {
   if (!installed) throw Error("Local run-MCP-grants migration verification failed");
   console.log("Local run-MCP-grants migration applied");
 }
+
+const implementationColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+if (implementationColumns.includes("implementation_sha")) {
+  console.log("Local implementation-commit migration is already applied");
+} else {
+  await query(await readFile(new URL("./0009_implementation_sha.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  if (!installed.includes("implementation_sha")) throw Error("Local implementation-commit migration verification failed");
+  console.log("Local implementation-commit migration applied");
+}

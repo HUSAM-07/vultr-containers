@@ -6,6 +6,8 @@ import { createHmac, generateKeyPairSync, verify } from "node:crypto";
 import { accountAccess, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
+import { encryptToken } from "./fava-cloudflare.ts";
+import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
@@ -20,9 +22,11 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0002_spec_model.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0003_run_output.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0004_run_started_at.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0005_worker_previews.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0006_run_skills.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0007_unique_project_repository.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0008_run_mcp_grants.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0009_implementation_sha.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -447,4 +451,54 @@ test("installation removal cancels only affected runs and requires relinking", a
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM projects WHERE installation_id = 7").get().count, 0);
     assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = 'b'").get().status, "cancelled");
   } finally { sqlite.close(); }
+});
+
+test("successful Worker Preview is attached only to the matching implementation commit", async () => {
+  const { db, sqlite } = testDb();
+  const originalFetch = globalThis.fetch;
+  const originalSecret = process.env.FAVA_SESSION_SECRET;
+  process.env.FAVA_SESSION_SECRET = "a-secure-example-secret-with-more-than-32-characters";
+  try {
+    const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    const project = await linkProject(db, account,
+      { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
+    await recordSpec(db, project.id, 1,
+      { number: 1, path: "specs/change.md", branch: "spec/change" }, chooseModel("gpt-6-sol"));
+    const specId = sqlite.prepare("SELECT id FROM specs WHERE project_id = ?").get(project.id).id;
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const sha = "b".repeat(40);
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, completed_at, implementation_branch, implementation_sha, pull_number) VALUES (?, ?, ?, 'gpt-6-sol', 'openai', 'succeeded', 1, ?, ?, ?, 8)")
+      .run(runId, specId, "a".repeat(40), Date.now(), `impl/${runId}`, sha);
+    const token = await encryptToken("cloudflare-test-token");
+    sqlite.prepare("INSERT INTO cloudflare_connections VALUES (?, ?, ?, 1)").run(account, "c".repeat(32), token);
+    sqlite.prepare("INSERT INTO cloudflare_project_previews VALUES (?, ?, 'worker', 'tag', 'trigger', 1)")
+      .run(project.id, account);
+    let calls = 0;
+    globalThis.fetch = async url => {
+      calls++;
+      if (String(url).endsWith("/builds/workers/tag/builds?per_page=100"))
+        return Response.json({ success: true, result: [
+          { build_uuid: "wrong-trigger", build_outcome: "success", trigger: { trigger_uuid: "other" },
+            build_trigger_metadata: { branch: `impl/${runId}`, commit_hash: sha } },
+          { build_uuid: "wrong-commit", build_outcome: "success", trigger: { trigger_uuid: "trigger" },
+            build_trigger_metadata: { branch: `impl/${runId}`, commit_hash: "c".repeat(40) } },
+          { build_uuid: "right", build_outcome: "success", trigger: { trigger_uuid: "trigger" },
+            build_trigger_metadata: { branch: `impl/${runId}`, commit_hash: sha } },
+        ] });
+      assert.equal(String(url).endsWith("/builds/builds/right"), true);
+      return Response.json({ success: true, result: { preview_url: "https://branch.example.workers.dev" } });
+    };
+    const runs = await listRuns(db, account, "owner/repo");
+    await refreshRunPreviews(db, account, project.id, runs);
+    assert.equal(runs[0].previewUrl, "https://branch.example.workers.dev");
+    assert.equal(sqlite.prepare("SELECT preview_url FROM runs WHERE id = ?").get(runId).preview_url,
+      "https://branch.example.workers.dev");
+    await refreshRunPreviews(db, account, project.id, runs);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalSecret === undefined) delete process.env.FAVA_SESSION_SECRET;
+    else process.env.FAVA_SESSION_SECRET = originalSecret;
+    sqlite.close();
+  }
 });

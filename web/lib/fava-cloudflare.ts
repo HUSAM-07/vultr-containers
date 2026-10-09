@@ -92,7 +92,8 @@ export function verifyPreviewConfig(source: string, workerName: string) {
 }
 
 export type PreviewBuild = { build_uuid: string; created_on?: string; status?: string; build_outcome?: string;
-  preview_url?: string; build_trigger_metadata?: { branch?: string }; trigger?: { trigger_uuid?: string } };
+  preview_url?: string; build_trigger_metadata?: { branch?: string; commit_hash?: string };
+  trigger?: { trigger_uuid?: string } };
 
 export function recentPreviewBuilds(builds: PreviewBuild[], triggerUuid: string) {
   const branches = new Set<string>();

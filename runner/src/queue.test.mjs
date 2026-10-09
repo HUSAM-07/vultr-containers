@@ -10,7 +10,7 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql"])
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql"])
     sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
   sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
   sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")
@@ -81,9 +81,9 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     assert.equal(starts.length, 1);
     setTask({ state: "succeeded", result: "Built requested change" });
     await reconcile(env);
-    assert.deepEqual({ ...sqlite.prepare("SELECT status, summary, artifact_key AS artifactKey, implementation_branch AS branch, pull_number AS pullNumber FROM runs WHERE id = ?").get(runId) },
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, summary, artifact_key AS artifactKey, implementation_branch AS branch, implementation_sha AS sha, pull_number AS pullNumber FROM runs WHERE id = ?").get(runId) },
       { status: "succeeded", summary: "Built requested change", artifactKey: `runs/${runId}`,
-        branch: `impl/${runId}`, pullNumber: 8 });
+        branch: `impl/${runId}`, sha: "e".repeat(40), pullNumber: 8 });
     assert.equal(writes.get(`runs/${runId}/diff.patch`).includes("new code"), true);
     assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
     assert.equal(writes.get(`runs/${runId}/stderr.log`), "");
