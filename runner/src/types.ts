@@ -10,6 +10,7 @@ export type Env = {
   GITHUB_APP_CLIENT_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
   FAVA_RUN_SECRET: string;
+  FAVA_SESSION_SECRET: string;
 };
 
 export type RunJob = {
@@ -22,4 +23,5 @@ export type RunJob = {
   provider: "openai" | "anthropic";
   model: "gpt-6-sol" | "claude-sonnet-5";
   skills: string;
+  mcpGrantIds: string[];
 };

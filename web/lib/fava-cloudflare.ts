@@ -16,25 +16,24 @@ function fromBase64url(value: string) {
   return Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), char => char.charCodeAt(0));
 }
 
-async function key() {
-  const secret = process.env.FAVA_SESSION_SECRET;
+async function key(purpose: "cloudflare" | "mcp", secret = process.env.FAVA_SESSION_SECRET) {
   if (!secret || secret.length < 32) throw new CloudflareError(503, "Fava credential encryption is not configured");
-  const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`fava:cloudflare:${secret}`));
+  const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`fava:${purpose}:${secret}`));
   return crypto.subtle.importKey("raw", hash, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-export async function encryptToken(token: string) {
+export async function encryptToken(token: string, purpose: "cloudflare" | "mcp" = "cloudflare", secret?: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await key(), encoder.encode(token));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await key(purpose, secret), encoder.encode(token));
   return `${base64url(iv)}.${base64url(new Uint8Array(data))}`;
 }
 
-export async function decryptToken(value: string) {
+export async function decryptToken(value: string, purpose: "cloudflare" | "mcp" = "cloudflare", secret?: string) {
   try {
     const [iv, data] = value.split(".");
-    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64url(iv) }, await key(), fromBase64url(data));
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64url(iv) }, await key(purpose, secret), fromBase64url(data));
     return new TextDecoder().decode(plain);
-  } catch { throw new CloudflareError(503, "Cloudflare connection needs to be reconnected"); }
+  } catch { throw new CloudflareError(503, purpose === "mcp" ? "MCP connection needs to be reconnected" : "Cloudflare connection needs to be reconnected"); }
 }
 
 export async function cloudflare<T>(token: string, path: string, method = "GET", body?: unknown): Promise<T> {

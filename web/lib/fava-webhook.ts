@@ -102,7 +102,10 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
     const skills = await db.prepare("SELECT id, commit_sha AS commitSha FROM skills WHERE account_id = ? AND active = 1 AND (project_id IS NULL OR project_id = ?) ORDER BY project_id IS NULL DESC, path LIMIT 9")
       .bind(spec.accountId, spec.projectId).all<{ id: string; commitSha: string }>();
     if (skills.results.length > 8) throw new GitHubError(422, "This project has more than eight selected skills");
-    return { spec, id: crypto.randomUUID(), skills: skills.results };
+    const grants = await db.prepare("SELECT id FROM mcp_grants WHERE project_id = ? AND revoked_at IS NULL ORDER BY granted_at, id LIMIT 9")
+      .bind(spec.projectId).all<{ id: string }>();
+    if (grants.results.length > 8) throw new GitHubError(422, "This project has more than eight MCP grants");
+    return { spec, id: crypto.randomUUID(), skills: skills.results, grants: grants.results };
   }));
   await db.batch([
     ...matching.map(spec => db.prepare("UPDATE specs SET status = 'merged', merged_commit_sha = ? WHERE id = ?")
@@ -114,6 +117,9 @@ export async function processPullRequestEvent(db: Db, payload: unknown, delivery
     ...runs.flatMap(({ spec, id, skills }) => skills.map((skill: { id: string; commitSha: string }) =>
       db.prepare("INSERT INTO run_skills (run_id, skill_id, commit_sha) SELECT ?, ?, ? FROM runs WHERE id = ? AND spec_id = ?")
         .bind(id, skill.id, skill.commitSha, id, spec.id))),
+    ...runs.flatMap(({ spec, id, grants }) => grants.map((grant: { id: string }) =>
+      db.prepare("INSERT INTO run_mcp_grants (run_id, grant_id) SELECT ?, ? FROM runs WHERE id = ? AND spec_id = ?")
+        .bind(id, grant.id, id, spec.id))),
     db.prepare("UPDATE webhook_deliveries SET processed_at = ? WHERE delivery_id = ?").bind(Date.now(), deliveryId),
   ]);
   return { recorded: true, status: "merged", specIds: matching.map(spec => spec.id) };

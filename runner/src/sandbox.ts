@@ -35,7 +35,8 @@ export class AgentSandbox extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       if (await this.ctx.storage.get("job")) return "already-started";
       if (!/^[a-f0-9]{40}$/i.test(job.sha) || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(job.specPath) ||
-        !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(job.repository))
+        !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(job.repository) ||
+        job.mcpGrantIds.length > 8 || job.mcpGrantIds.some(id => !/^[a-f0-9-]{36}$/i.test(id)))
         throw Error("Invalid run source");
       await this.ctx.storage.put("job", { ...job, startedAt: Date.now() });
       await this.ctx.storage.put("phase", "preparing");
@@ -160,21 +161,28 @@ export class AgentSandbox extends DurableObject<Env> {
 
   private agentCommand(job: RunJob, prompt: string) {
     const gateway = `https://gateway.ai.cloudflare.com/v1/${this.env.AI_GATEWAY_ACCOUNT_ID}/${this.env.AI_GATEWAY_ID}`;
+    const servers = Object.fromEntries(job.mcpGrantIds.map((id, index) =>
+      [`fava_${index + 1}`, { type: "http", url: `https://mcp.fava.invalid/${id}`,
+        headers: { Authorization: `Bearer ${runCapability(job.id, this.env.FAVA_RUN_SECRET)}` } }]));
+    const codexMcp = job.mcpGrantIds.flatMap((id, index) => ["--config",
+      `mcp_servers.fava_${index + 1}={url=${JSON.stringify(`https://mcp.fava.invalid/${id}`)},bearer_token_env_var="FAVA_MCP_RUN_CAPABILITY"}`]);
     return job.provider === "anthropic" ? ["claude", "--print", "--output-format", "stream-json", "--verbose",
-      "--dangerously-skip-permissions", "--no-session-persistence", "--model", job.model, "--", prompt]
+      "--dangerously-skip-permissions", "--no-session-persistence", "--model", job.model,
+      ...(job.mcpGrantIds.length ? ["--mcp-config", JSON.stringify({ mcpServers: servers }), "--strict-mcp-config"] : []),
+      "--", prompt]
       : ["codex", "exec", "--json", "--ephemeral", "--dangerously-bypass-approvals-and-sandbox",
         "--output-last-message", `${taskDir}/last-message.txt`, "--model", job.model,
         "--config", 'model_provider="cloudflare-ai-gateway"',
         "--config", `model_providers.cloudflare-ai-gateway={ name = "Cloudflare AI Gateway", base_url = ${JSON.stringify(`${gateway}/openai`)}, wire_api = "responses" }`,
         "--config", "analytics.enabled=false", "--config", "check_for_update_on_startup=false",
-        "--config", "features.plugins=false", "--", prompt];
+        "--config", "features.plugins=false", ...codexMcp, "--", prompt];
   }
 
   private agentEnv(job: RunJob): Record<string, string> {
     return job.provider === "anthropic" ? {
       ANTHROPIC_BASE_URL: `https://gateway.ai.cloudflare.com/v1/${this.env.AI_GATEWAY_ACCOUNT_ID}/${this.env.AI_GATEWAY_ID}/anthropic`,
       ANTHROPIC_API_KEY: "provided-by-worker", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", IS_SANDBOX: "1",
-    } : {};
+    } : job.mcpGrantIds.length ? { FAVA_MCP_RUN_CAPABILITY: runCapability(job.id, this.env.FAVA_RUN_SECRET) } : {};
   }
 
   private async readOptional(path: string) {

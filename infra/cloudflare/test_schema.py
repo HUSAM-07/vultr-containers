@@ -13,6 +13,7 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0005_worker_previews.sql").read_text())
         db.executescript(Path(__file__).with_name("0006_run_skills.sql").read_text())
         db.executescript(Path(__file__).with_name("0007_unique_project_repository.sql").read_text())
+        db.executescript(Path(__file__).with_name("0008_run_mcp_grants.sql").read_text())
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")
         db.execute("INSERT INTO accounts VALUES ('a', 'Team', 1, 1)")
         db.execute("INSERT INTO account_memberships VALUES ('a', 1, 'owner')")
@@ -37,6 +38,10 @@ class SchemaTest(unittest.TestCase):
         db.execute("INSERT INTO run_skills VALUES ('r', 'skill', 'abc')")
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("INSERT INTO run_skills VALUES ('r', 'skill', 'other')")
+        db.execute("INSERT INTO mcp_grants VALUES ('grant', 'p', 'https://mcp.example.org/mcp', '[\"list\"]', NULL, 1, 1, NULL)")
+        db.execute("INSERT INTO run_mcp_grants VALUES ('r', 'grant')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO run_mcp_grants VALUES ('r', 'grant')")
 
 
 if __name__ == "__main__":

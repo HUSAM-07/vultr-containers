@@ -8,6 +8,7 @@ import { Button, ButtonLink } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { Textarea } from "@/components/base/textarea/textarea";
 import { CloudflarePreviewPanel } from "@/components/application/cloudflare-preview-panel";
+import { McpGrantsPanel } from "@/components/application/mcp-grants-panel";
 import { ProjectMembersPanel } from "@/components/application/project-members-panel";
 import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
@@ -198,6 +199,7 @@ export default function WorkspacePage() {
         {session?.connected && repo && selectedProject && <>
           <SkillsPanel key={`skills-${repo}`} repository={repo} canEdit={selectedProject.role !== "viewer"}
             canManageWorkspace={selectedProject.accountRole === "owner" || selectedProject.accountRole === "admin"} />
+          <McpGrantsPanel key={`mcp-${repo}`} repository={repo} />
           {(selectedProject.role === "owner" || selectedProject.role === "admin") &&
             <ProjectMembersPanel key={`members-${repo}`} repository={repo} />}
           <CloudflarePreviewPanel key={`preview-${repo}`} repository={repo} />

@@ -22,6 +22,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0004_run_started_at.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0006_run_skills.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0007_unique_project_repository.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0008_run_mcp_grants.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -236,6 +237,8 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     const project = await linkProject(db, account, { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
     sqlite.prepare("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill-1', ?, NULL, 42, '.fava/skills/review.md', ?, 1)")
       .run(account, "b".repeat(40));
+    sqlite.prepare("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES ('grant-1', ?, 'https://mcp.example.org/mcp', '[\"list\"]', 1, 1)")
+      .run(project.id);
     const specId = await recordSpec(db, project.id, 1,
       { number: 4, path: "specs/export-123.md", branch: "spec/export-123" }, chooseModel("gpt-6-sol"));
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -283,6 +286,7 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
     assert.deepEqual({ ...sqlite.prepare("SELECT spec_id AS specId, merged_commit_sha AS sha, model, provider, status FROM runs WHERE spec_id = ?").get(specId) },
       { specId, sha: "a".repeat(40), model: "gpt-6-sol", provider: "openai", status: "queued" });
     assert.equal(sqlite.prepare("SELECT commit_sha AS sha FROM run_skills").get().sha, "b".repeat(40));
+    assert.equal(sqlite.prepare("SELECT grant_id AS grantId FROM run_mcp_grants").get().grantId, "grant-1");
     assert.equal((await listRuns(db, account, "owner/repo")).length, 1);
     assert.deepEqual(await listRuns(db, "github:2", "owner/repo"), []);
     assert.equal(sqlite.prepare("SELECT processed_at FROM webhook_deliveries WHERE delivery_id = 'delivery-1'").get().processed_at > 0, true);
@@ -294,6 +298,7 @@ test("signed merge webhook records only a tracked spec-only PR", async () => {
       { clientId: "Iv1.test", privateKey: pem }), { recorded: true, status: "merged", specIds: [specId] });
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM runs WHERE spec_id = ?").get(specId).count, 1);
     assert.equal(sqlite.prepare("SELECT commit_sha AS sha FROM run_skills").get().sha, "b".repeat(40));
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM run_mcp_grants").get().count, 1);
     await recordSpec(db, project.id, 1,
       { number: 5, path: "specs/unsafe-123.md", branch: "spec/unsafe-123" }, chooseModel("claude-sonnet-5"));
     await assert.rejects(processPullRequestEvent(db, { ...event,

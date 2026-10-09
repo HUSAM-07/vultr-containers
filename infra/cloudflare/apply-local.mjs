@@ -101,3 +101,13 @@ if (uniqueRepo) {
   if (!installed) throw Error("Local project identity migration verification failed");
   console.log("Local project identity migration applied");
 }
+
+const runMcpGrants = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_mcp_grants'")).rows.length > 0;
+if (runMcpGrants) {
+  console.log("Local run-MCP-grants migration is already applied");
+} else {
+  await query(await readFile(new URL("./0008_run_mcp_grants.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'run_mcp_grants'")).rows.length > 0;
+  if (!installed) throw Error("Local run-MCP-grants migration verification failed");
+  console.log("Local run-MCP-grants migration applied");
+}

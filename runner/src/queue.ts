@@ -36,6 +36,14 @@ async function saveLogs(env: Env, id: string, sandbox: DurableObjectStub<AgentSa
   return prefix;
 }
 
+async function loadRunMcpGrants(env: Env, runId: string) {
+  const result = await env.DB.prepare("SELECT run_mcp_grants.grant_id AS id, CASE WHEN mcp_grants.revoked_at IS NULL AND mcp_grants.project_id = specs.project_id THEN 1 ELSE 0 END AS active FROM run_mcp_grants JOIN runs ON runs.id = run_mcp_grants.run_id JOIN specs ON specs.id = runs.spec_id JOIN mcp_grants ON mcp_grants.id = run_mcp_grants.grant_id WHERE run_mcp_grants.run_id = ? LIMIT 9")
+    .bind(runId).all<{ id: string; active: number }>();
+  if (result.results.length > 8 || result.results.some(grant => !grant.active))
+    throw Error("A pinned MCP grant is unavailable");
+  return result.results.map(grant => grant.id);
+}
+
 export async function reconcile(env: Env) {
   for (const run of await running(env)) {
     const { id, startedAt } = run;
@@ -110,14 +118,18 @@ export async function dispatch(env: Env) {
       .bind(Date.now(), row.id).run();
     if (claimed.meta.changes !== 1) continue;
     let skills: string;
-    try { skills = await loadRunSkills(env, row.id); }
+    let mcpGrantIds: string[];
+    try {
+      skills = await loadRunSkills(env, row.id);
+      mcpGrantIds = await loadRunMcpGrants(env, row.id);
+    }
     catch (error) {
-      await fail(env, row.id, `Pinned skills could not be loaded: ${error instanceof Error ? error.message : "unknown error"}`);
+      await fail(env, row.id, `Run resources could not be loaded: ${error instanceof Error ? error.message : "unknown error"}`);
       continue;
     }
     const job: RunJob = { id: row.id, repository: row.repository, repositoryId: row.repositoryId,
       installationId: row.installationId, sha: row.sha, specPath: row.specPath,
-      provider: model.provider, model: model.model, skills };
+      provider: model.provider, model: model.model, skills, mcpGrantIds };
     try { await env.SANDBOX.getByName(row.id).start(job); }
     catch (error) { console.error("Run dispatch outcome is unknown; reconciliation will inspect it", row.id, error); }
   }

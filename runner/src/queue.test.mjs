@@ -10,7 +10,7 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql"])
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql"])
     sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
   sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
   sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")
@@ -76,7 +76,7 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     await dispatch(env);
     assert.equal(starts.length, 1);
     assert.deepEqual(starts[0], { id: runId, repository: "owner/private", repositoryId: 42,
-      installationId: 7, sha: "a".repeat(40), specPath: "specs/change.md", provider: "openai", model: "gpt-6-sol", skills: "" });
+      installationId: 7, sha: "a".repeat(40), specPath: "specs/change.md", provider: "openai", model: "gpt-6-sol", skills: "", mcpGrantIds: [] });
     await dispatch(env);
     assert.equal(starts.length, 1);
     setTask({ state: "succeeded", result: "Built requested change" });
@@ -89,6 +89,24 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     assert.equal(writes.get(`runs/${runId}/stderr.log`), "");
     assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, true);
   } finally { globalThis.fetch = originalFetch; sqlite.close(); }
+});
+
+test("dispatch passes only active project grants pinned to the run", async () => {
+  const { sqlite, env, starts } = fixture();
+  try {
+    sqlite.exec("INSERT INTO mcp_grants VALUES ('22222222-2222-4222-8222-222222222222', 'p', 'https://mcp.example.org/mcp', '[\"search\"]', NULL, 1, 1, NULL)");
+    sqlite.exec(`INSERT INTO run_mcp_grants VALUES ('${runId}', '22222222-2222-4222-8222-222222222222')`);
+    await dispatch(env);
+    assert.deepEqual(starts[0].mcpGrantIds, ["22222222-2222-4222-8222-222222222222"]);
+  } finally { sqlite.close(); }
+  const revoked = fixture();
+  try {
+    revoked.sqlite.exec("INSERT INTO mcp_grants VALUES ('22222222-2222-4222-8222-222222222222', 'p', 'https://mcp.example.org/mcp', '[\"search\"]', NULL, 1, 1, 2)");
+    revoked.sqlite.exec(`INSERT INTO run_mcp_grants VALUES ('${runId}', '22222222-2222-4222-8222-222222222222')`);
+    await dispatch(revoked.env);
+    assert.equal(revoked.starts.length, 0);
+    assert.equal(revoked.sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+  } finally { revoked.sqlite.close(); }
 });
 
 test("running agents expose bounded logs before completion and retain them on timeout", async () => {
