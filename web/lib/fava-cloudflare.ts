@@ -1,5 +1,4 @@
 import JSON5 from "json5";
-import type { env } from "./runtime-env.ts";
 
 export class CloudflareError extends Error {
   status: number;
@@ -8,11 +7,13 @@ export class CloudflareError extends Error {
 
 const base = "https://api.cloudflare.com/client/v4";
 const encoder = new TextEncoder();
+type ConnectionDb = { prepare(sql: string): { bind(...values: (string | number | null)[]): {
+  first<T>(): Promise<T | null>; run(): Promise<{ meta: { changes: number } }> } } };
 export type CloudflareConnection = { account_id: string; cloudflare_account_id: string;
   token_ciphertext: string; auth_method: "token" | "oauth";
   refresh_ciphertext: string | null; token_expires_at: number | null };
 
-export async function connectionFor(db: typeof env.DB, accountId: string) {
+export async function connectionFor(db: ConnectionDb, accountId: string) {
   return db.prepare("SELECT account_id, cloudflare_account_id, token_ciphertext, auth_method, refresh_ciphertext, token_expires_at FROM cloudflare_connections WHERE account_id = ?")
     .bind(accountId).first<CloudflareConnection>();
 }
@@ -45,7 +46,7 @@ export async function decryptToken(value: string, purpose: "cloudflare" | "mcp" 
   } catch { throw new CloudflareError(503, purpose === "mcp" ? "MCP connection needs to be reconnected" : "Cloudflare connection needs to be reconnected"); }
 }
 
-export async function cloudflareToken(db: typeof env.DB, connection: CloudflareConnection): Promise<string> {
+export async function cloudflareToken(db: ConnectionDb, connection: CloudflareConnection): Promise<string> {
   if (connection.auth_method === "token") return decryptToken(connection.token_ciphertext);
   if (connection.token_expires_at && connection.token_expires_at > Date.now() + 60_000)
     return decryptToken(connection.token_ciphertext);
