@@ -4,10 +4,8 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
+  resolve: { alias: [{ find: /^@\/lib\/runtime-env$/, replacement: "cloudflare:workers" }] },
   plugins: [
-    { name: "fava-worker-env", enforce: "pre", resolveId(id) {
-      if (id === "@/lib/runtime-env") return { id: "cloudflare:workers", external: true };
-    } },
     tailwindcss(),
     vinext(),
     cloudflare({
