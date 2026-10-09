@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { env } from "@/lib/runtime-env";
 
 export async function GET(request: NextRequest) {
   const clientId = process.env.GITHUB_APP_CLIENT_ID;
-  if (!clientId || !process.env.GITHUB_APP_CLIENT_SECRET || !process.env.FAVA_SESSION_SECRET ||
+  if (!env.DB || !clientId || !process.env.GITHUB_APP_CLIENT_SECRET || !process.env.FAVA_SESSION_SECRET ||
     process.env.FAVA_SESSION_SECRET.length < 32)
     return NextResponse.json({ error: "GitHub App is not configured" }, { status: 503 });
   const state = crypto.randomUUID();

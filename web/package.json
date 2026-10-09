@@ -11,6 +11,7 @@
     "dev:vinext": "vite dev --port 3001",
     "build:vinext": "vite build",
     "start:vinext": "vite preview",
+    "db:migrate:local": "node ../infra/cloudflare/apply-local.mjs",
     "deploy:vinext": "vinext-cloudflare deploy"
   },
   "dependencies": {

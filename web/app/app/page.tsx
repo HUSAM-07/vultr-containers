@@ -10,7 +10,8 @@ import { Textarea } from "@/components/base/textarea/textarea";
 import { cx } from "@/utils/cx";
 
 type Session = { configured: boolean; connected: boolean; user: { login: string; avatarUrl: string } | null; installUrl: string | null };
-type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean; htmlUrl: string };
+type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean; htmlUrl: string; installationId: number };
+type Project = { id: string; repository: string; defaultBranch: string };
 type Context = { repository: string; defaultBranch: string; paths: string[]; truncated: boolean; files: { path: string; text: string }[] };
 type Published = { url: string; number: number; branch: string; path: string };
 type SpecProposal = { number: number; title: string; url: string; path: string; status: "open" | "merged" | "closed"; mergedCommitSha: string | null };
@@ -27,6 +28,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 export default function WorkspacePage() {
   const [session, setSession] = useState<Session | null>(null);
   const [repos, setRepos] = useState<Repository[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [repo, setRepo] = useState("");
   const [context, setContext] = useState<Context | null>(null);
   const [title, setTitle] = useState("");
@@ -49,7 +51,10 @@ export default function WorkspacePage() {
     } catch { queueMicrotask(() => setRestored(true)); }
     json<Session>("/api/github").then(async value => {
       setSession(value);
-      if (value.connected) setRepos(await json<Repository[]>("/api/github?action=repos"));
+      if (value.connected) {
+        setRepos(await json<Repository[]>("/api/github?action=repos"));
+        setProjects(await json<Project[]>("/api/github?action=projects"));
+      }
     }).catch(cause => setError((cause as Error).message));
   }, []);
   useEffect(() => {
@@ -60,6 +65,9 @@ export default function WorkspacePage() {
   async function choose(name: string) {
     setRepo(name); setContext(null); setSpecs([]); setPublished(null); setError(""); setBusy(true);
     try {
+      const linked = await json<Project>("/api/github?action=project", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: name }) });
+      setProjects(current => [linked, ...current.filter(item => item.id !== linked.id)]);
       const selected = encodeURIComponent(name);
       const [imported, proposals] = await Promise.all([
         json<Context>(`/api/github?action=context&repo=${selected}`),
@@ -93,7 +101,7 @@ export default function WorkspacePage() {
       <aside className="flex flex-col rounded-3xl border border-border-button-default bg-background-secondary-default p-4">
         <div className="flex items-center justify-between"><Link href="/" className="flex items-center gap-2 text-title-3-semibold"><span className="grid size-8 place-items-center rounded-xl bg-accent-600 text-background-primary-default">F</span>Fava</Link><span className="rounded-full bg-background-tertiary-default px-2 py-1 text-caption-1-semibold text-text-tertiary">Workspace</span></div>
         <div className="mt-8 flex items-center justify-between"><h2 className="text-caption-1-semibold uppercase tracking-widest text-text-tertiary">Repositories</h2>{session?.connected && <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh repositories" onClick={() => json<Repository[]>("/api/github?action=repos").then(setRepos).catch(cause => setError((cause as Error).message))} />}</div>
-        {session?.connected ? <div className="mt-3 flex flex-col gap-1">{repos.length ? repos.map(item => <Button key={item.id} variant="ghost" onClick={() => void choose(item.fullName)} className={cx("!h-auto !min-h-9 !justify-start !whitespace-normal !text-start", repo === item.fullName && "!bg-background-tertiary-default")} leadingIcon={RiFolder3Line}>{item.fullName}</Button>) : <p className="rounded-xl border border-border-button-default p-3 text-body-regular text-text-secondary">No repositories are available to this GitHub App yet.</p>}</div> : <div className="mt-3 rounded-xl border border-dashed border-border-button-default p-4 text-body-regular text-text-secondary">Your repositories appear here after you connect GitHub.</div>}
+        {session?.connected ? <div className="mt-3 flex flex-col gap-1">{repos.length ? repos.map(item => <Button key={item.id} variant="ghost" onClick={() => void choose(item.fullName)} className={cx("!h-auto !min-h-9 !justify-start !whitespace-normal !text-start", repo === item.fullName && "!bg-background-tertiary-default")} leadingIcon={RiFolder3Line}>{item.fullName}{projects.some(project => project.repository === item.fullName) ? " · linked" : ""}</Button>) : <p className="rounded-xl border border-border-button-default p-3 text-body-regular text-text-secondary">No repositories are available to this GitHub App yet.</p>}</div> : <div className="mt-3 rounded-xl border border-dashed border-border-button-default p-4 text-body-regular text-text-secondary">Your repositories appear here after you connect GitHub.</div>}
         {session?.connected && <div className="mt-4 flex flex-wrap gap-2">{session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="secondary" size="small" leadingIcon={RiAddLine}>Install on repos</ButtonLink>}<ButtonLink href="https://github.com/new" target="_blank" rel="noreferrer" variant="ghost" size="small">New on GitHub</ButtonLink></div>}
         <div className="mt-auto border-t border-separator-border pt-5">{session?.connected ? <div className="flex items-center gap-2"><span className="grid size-8 place-items-center rounded-full bg-background-tertiary-default text-body-medium">{session.user?.login.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 truncate text-body-medium">{session.user?.login}</span><Button variant="ghost" size="xs" iconOnly leadingIcon={RiLogoutBoxLine} aria-label="Disconnect GitHub" onClick={() => void logout()} /></div> : <p className="text-caption-1-regular text-text-tertiary">Your draft stays in this browser until it is published to GitHub.</p>}</div>
       </aside>

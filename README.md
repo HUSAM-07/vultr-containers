@@ -1,20 +1,20 @@
 # Fava — spec-first software building
 
-Fava's first connected workflow lets a person sign in through a GitHub App, choose an installed repository, import its file map and project instructions, write a specification, and open a spec pull request. The specification is stored in GitHub under `specs/`. The [technical design](docs/fava-architecture.md) and editable [Draw.io diagram](docs/fava-platform.drawio) cover the planned merged-spec gate, agent harness, identity layer, and Cloudflare services.
+Fava's first connected workflow lets a person sign in through a GitHub App, link an installed repository to a personal Fava account, import its file map and project instructions, write a specification, and open a spec pull request. The specification is stored in GitHub under `specs/`. The [technical design](docs/fava-architecture.md) and editable [Draw.io diagram](docs/fava-platform.drawio) cover the planned merged-spec gate, agent harness, identity layer, and Cloudflare services.
 
 The landing page is `/`, the spec workspace is `/app`, and the existing Forge agent demo is `/demo`. The GitHub App is not registered yet, so account connection and a real spec PR still need live verification. The Cloudflare Workers build runs locally through vinext; no Cloudflare deployment has been made.
 
 ## GitHub App setup
 
-1. Register a GitHub App with callback URL `http://localhost:3000/api/github/auth/callback` for local development. Give it repository **Metadata: read**, **Contents: read/write**, and **Pull requests: read/write**. Enable expiring user access tokens. Install it only on repositories you want Fava to access.
-2. Copy `web/.env.example` to `web/.env.local`. Set `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` from the App settings. Generate a random `FAVA_SESSION_SECRET` of at least 32 characters. Keep all four values out of Git.
-3. Start the web app with `npm run dev:web`, open `http://localhost:3000/app`, connect GitHub, choose an installed repository, and create a spec PR. The repository needs a nonempty default branch.
+1. Register a GitHub App with callback URL `http://127.0.0.1:3001/api/github/auth/callback` for the local Worker preview. Give it repository **Metadata: read**, **Contents: read/write**, and **Pull requests: read/write**. Enable expiring user access tokens. Install it only on repositories you want Fava to access.
+2. Copy `web/.env.example` to `web/.dev.vars`. Set `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` from the App settings. Generate a random `FAVA_SESSION_SECRET` of at least 32 characters. Keep all four values out of Git.
+3. Build and start the Cloudflare Worker preview as below, apply the local D1 schema, then open `http://127.0.0.1:3001/app`. Connect GitHub, choose an installed repository, and create a spec PR. The repository needs a nonempty default branch.
 
-The current session uses an encrypted, HTTP-only cookie. It is a local first step; the multi-tenant account and role store described in the architecture document is still pending.
+GitHub sign-in creates a personal account in D1, and choosing a repository links it as a project. The session still uses an encrypted, HTTP-only cookie. Organization roles, server-side session revocation, and agent runs remain pending.
 
 ## Cloudflare Workers build
 
-From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. This serves the built Worker at `http://localhost:3001`. `npm run deploy:vinext` is configured for a Cloudflare account once that account is signed in and secrets are set. The existing Next.js and Vercel path remains usable while Cloudflare deployment is being completed.
+From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local` once. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. `npm run deploy:vinext` still needs a signed-in Cloudflare account, a provisioned D1 database with the schema applied, and the four GitHub/session secrets. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
 
 ## Forge — Vultr Agent Rush demo
 

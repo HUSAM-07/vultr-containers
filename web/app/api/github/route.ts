@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GitHubError, importContext, listRepositories, listSpecPullRequests, publishSpec } from "@/lib/fava-github";
+import { env } from "@/lib/runtime-env";
+import { ensurePersonalAccount, linkProject, listProjects } from "@/lib/fava-db";
+import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
+import { readJson } from "@/lib/fava-json";
 import { clearSession, readSession, setSession } from "@/lib/fava-session";
 
 function fail(error: unknown) {
@@ -9,7 +12,7 @@ function fail(error: unknown) {
 
 export async function GET(request: NextRequest) {
   const action = request.nextUrl.searchParams.get("action") || "session";
-  const configured = Boolean(process.env.GITHUB_APP_CLIENT_ID && process.env.GITHUB_APP_CLIENT_SECRET &&
+  const configured = Boolean(env.DB && process.env.GITHUB_APP_CLIENT_ID && process.env.GITHUB_APP_CLIENT_SECRET &&
     process.env.FAVA_SESSION_SECRET && process.env.FAVA_SESSION_SECRET.length >= 32);
   if (action === "session" && !configured) return NextResponse.json({ configured: false, connected: false });
   try {
@@ -23,6 +26,7 @@ export async function GET(request: NextRequest) {
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repo = request.nextUrl.searchParams.get("repo") || "";
     const value = action === "repos" ? await listRepositories(auth.session.token)
+      : action === "projects" ? await listProjects(env.DB, `github:${auth.session.user.id}`)
       : action === "context" ? await importContext(auth.session.token, repo)
       : action === "specs" ? await listSpecPullRequests(auth.session.token, repo)
       : null;
@@ -42,17 +46,33 @@ export async function POST(request: NextRequest) {
     clearSession(response);
     return response;
   }
-  if (action !== "spec") return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (action !== "spec" && action !== "project") return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
     const auth = await readSession(request);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
-    if (Number(request.headers.get("content-length")) > 50_000)
-      return NextResponse.json({ error: "Specification is too large" }, { status: 413 });
-    const text = await request.text();
-    if (text.length > 50_000) return NextResponse.json({ error: "Specification is too large" }, { status: 413 });
-    const { repo, title, content } = JSON.parse(text);
+    if (action === "project") {
+      const body = await readJson(request, 1_000);
+      if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string")
+        throw new GitHubError(400, "Choose a valid repository");
+      const name = parseRepo(body.repo);
+      const available = await listRepositories(auth.session.token);
+      const selected = available.find(item => item.fullName.toLowerCase() === name.toLowerCase());
+      if (!selected) throw new GitHubError(403, "Install the Fava GitHub App on this repository first");
+      const accountId = await ensurePersonalAccount(env.DB, auth.session.user);
+      const project = await linkProject(env.DB, accountId, selected);
+      const response = NextResponse.json(project, { status: 201 });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
+    const body = await readJson(request, 50_000);
+    if (!body || typeof body !== "object" || !("repo" in body) || !("title" in body) || !("content" in body))
+      throw new GitHubError(400, "Invalid specification");
+    const { repo, title, content } = body;
     if (typeof repo !== "string" || typeof title !== "string" || typeof content !== "string")
       return NextResponse.json({ error: "Invalid specification" }, { status: 400 });
+    const linked = await env.DB.prepare("SELECT id FROM projects WHERE account_id = ? AND full_name = ?")
+      .bind(`github:${auth.session.user.id}`, parseRepo(repo)).first();
+    if (!linked) throw new GitHubError(403, "Link this repository to your Fava account first");
     const result = await publishSpec(auth.session.token, repo, title, content);
     const response = NextResponse.json(result, { status: 201 });
     if (auth.refreshed) await setSession(response, request, auth.session);

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { env } from "@/lib/runtime-env";
 import { github } from "@/lib/fava-github";
+import { ensurePersonalAccount } from "@/lib/fava-db";
 import { setSession } from "@/lib/fava-session";
 
 export async function GET(request: NextRequest) {
@@ -23,6 +25,7 @@ export async function GET(request: NextRequest) {
     if (typeof token.access_token !== "string" || typeof token.expires_in !== "number")
       throw Error("GitHub did not issue an expiring access token");
     const user = await github<{ id: number; login: string; avatar_url: string }>(token.access_token, "/user");
+    await ensurePersonalAccount(env.DB, { id: user.id, login: user.login, avatarUrl: user.avatar_url });
     const response = NextResponse.redirect(new URL("/app", request.nextUrl.origin));
     await setSession(response, request, { token: token.access_token,
       expiresAt: Date.now() + token.expires_in * 1000,

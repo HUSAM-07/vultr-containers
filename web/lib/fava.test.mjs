@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { importContext, listSpecPullRequests, publishSpec, validateSpec } from "./fava-github.ts";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { ensurePersonalAccount, linkProject, listProjects } from "./fava-db.ts";
+import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec } from "./fava-github.ts";
+import { readJson } from "./fava-json.ts";
 import { seal, unseal } from "./fava-session.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
@@ -55,6 +59,60 @@ test("context import reads repository instructions and a bounded file map", asyn
     assert.deepEqual(context.files.map(file => file.path), ["README.md", "AGENTS.md"]);
     assert.equal(requests.length, 4);
   } finally { globalThis.fetch = original; }
+});
+
+test("repository listing retains the installation needed to link a project", async () => {
+  const original = globalThis.fetch;
+  const replies = [
+    { installations: [{ id: 7 }] },
+    { repositories: [{ id: 42, full_name: "owner/repo", private: true, default_branch: "main",
+      html_url: "https://github.com/owner/repo", permissions: { push: true } }] },
+  ];
+  globalThis.fetch = async () => Response.json(replies.shift());
+  try {
+    assert.equal((await listRepositories("test-token"))[0].installationId, 7);
+  } finally { globalThis.fetch = original; }
+});
+
+test("JSON reader rejects malformed and streamed oversized bodies", async () => {
+  await assert.rejects(readJson(new Request("http://localhost", { method: "POST", body: "{" }), 1000),
+    error => error.status === 400);
+  const body = new ReadableStream({ start(controller) {
+    controller.enqueue(new Uint8Array(1001)); controller.close();
+  } });
+  await assert.rejects(readJson(new Request("http://localhost", { method: "POST", body, duplex: "half" }), 1000),
+    error => error.status === 413);
+});
+
+test("GitHub identity creates one personal account and links a repository once", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0001_core.sql", import.meta.url), "utf8"));
+  const db = {
+    prepare(sql) {
+      let values = [];
+      return { bind(...params) { values = params; return this; },
+        async run() { sqlite.prepare(sql).run(...values); },
+        async first() { const row = sqlite.prepare(sql).get(...values); return row ? { ...row } : null; },
+        async all() { return { results: sqlite.prepare(sql).all(...values).map(row => ({ ...row })) }; },
+        execute() { sqlite.prepare(sql).run(...values); } };
+    },
+    async batch(statements) {
+      sqlite.exec("BEGIN");
+      try { for (const statement of statements) statement.execute(); sqlite.exec("COMMIT"); }
+      catch (error) { sqlite.exec("ROLLBACK"); throw error; }
+    },
+  };
+  try {
+    const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
+    const first = await linkProject(db, account, repo);
+    const second = await linkProject(db, account, repo);
+    assert.equal(first.id, second.id);
+    assert.deepEqual(await listProjects(db, account), [{ id: first.id, repository: "owner/repo", defaultBranch: "main" }]);
+    assert.deepEqual(await listProjects(db, "github:2"), []);
+    await ensurePersonalAccount(db, { id: 1, login: "renamed", avatarUrl: "" });
+    assert.equal(sqlite.prepare("SELECT login FROM users WHERE github_id = 1").get().login, "renamed");
+  } finally { sqlite.close(); }
 });
 
 test("spec pipeline includes only single-file proposals to the default branch", async () => {

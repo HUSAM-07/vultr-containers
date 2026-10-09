@@ -1,0 +1,34 @@
+import { readFile } from "node:fs/promises";
+
+const origin = new URL(process.argv[2] || "http://127.0.0.1:3001");
+if (!["localhost", "127.0.0.1"].includes(origin.hostname))
+  throw Error("Local D1 migration only accepts a loopback preview URL");
+
+const explorer = new URL("/cdn-cgi/local/explorer/api/d1/database", origin);
+const databases = await (await fetch(explorer)).json();
+const database = databases.result?.find(item => item.name === "DB");
+if (!database) throw Error("Start the Cloudflare Worker preview with its DB binding first");
+const endpoint = new URL(`${explorer.pathname}/${encodeURIComponent(database.uuid)}/raw`, origin);
+
+async function query(sql) {
+  const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sql }) });
+  const result = await response.json();
+  if (!response.ok || !result.success || !result.result?.[0]?.success)
+    throw Error(`Local D1 query failed: ${JSON.stringify(result.errors || result.result?.[0]?.error || [])}`);
+  return result.result[0].results;
+}
+
+const expected = ["users", "accounts", "account_memberships", "sessions", "projects", "project_memberships",
+  "specs", "runs", "skills", "mcp_grants", "deployments", "webhook_deliveries"];
+const current = (await query("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map(row => row[0]);
+if (expected.every(name => current.includes(name))) {
+  console.log("Local Fava D1 schema is already applied");
+} else if (expected.some(name => current.includes(name))) {
+  throw Error("Local D1 has a partial Fava schema; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0001_core.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map(row => row[0]);
+  if (!expected.every(name => installed.includes(name))) throw Error("Local D1 schema verification failed");
+  console.log("Local Fava D1 schema applied");
+}

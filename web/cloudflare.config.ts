@@ -9,6 +9,11 @@ export default defineConfig({
     assets: { notFoundHandling: "none" },
     env: {
       ASSETS: bindings.assets(),
+      DB: bindings.d1({ name: "fava-core" }),
+      FAVA_SESSION_SECRET: bindings.secret(),
+      GITHUB_APP_CLIENT_ID: bindings.secret(),
+      GITHUB_APP_CLIENT_SECRET: bindings.secret(),
+      GITHUB_APP_SLUG: bindings.secret(),
     },
   }),
 });

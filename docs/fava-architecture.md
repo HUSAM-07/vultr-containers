@@ -11,7 +11,7 @@ The editable diagram is [fava-platform.drawio](fava-platform.drawio). Open it in
 5. An isolated agent workspace checks out that exact commit. The agent receives the spec, selected project/shared skills, bounded repository context, chosen model, and approved MCP connections. It opens an implementation PR with test evidence and a preview URL.
 6. A spec conformance check compares changed files and behavior against acceptance criteria. Unrelated changes are flagged or removed before the implementation PR is marked ready.
 
-The current implementation covers steps 1–3 locally once a GitHub App is configured. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
+The current implementation covers steps 1–3 locally once a GitHub App is configured, including personal account creation and repository project links in D1. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
 
 ## Boundaries and Cloudflare services
 
@@ -31,7 +31,7 @@ The current implementation covers steps 1–3 locally once a GitHub App is confi
 
 Cloudflare service choice follows the workload: KV is a cache, D1 is the durable relational store, and R2 holds large blobs. Deploying every Cloudflare product would add cost and failure paths without satisfying a user requirement. AWS and GCP are optional deployment adapters, not dependencies of the Cloudflare-native path. Their connectors need scoped roles/service accounts and per-project consent; MCP servers run inside the project workspace, never in the browser.
 
-The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudflare/0001_core.sql). CI checks its relational constraints with SQLite. The app does not yet bind D1 or write these tables; account roles, revocation, and run state remain unimplemented at runtime.
+The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudflare/0001_core.sql). CI checks its relational constraints with SQLite. The Cloudflare Worker binds D1, creates a personal account at GitHub sign-in, and stores selected repository projects. Account roles beyond personal ownership, revocation, and run state remain unimplemented at runtime. The local schema is applied with `npm run db:migrate:local` from `web/`; no remote database has been provisioned.
 
 ## Identity and GitHub integration
 

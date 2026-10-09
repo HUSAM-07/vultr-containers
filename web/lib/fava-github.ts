@@ -1,4 +1,4 @@
-export type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string; canPush: boolean };
+export type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string; canPush: boolean; installationId: number };
 
 export class GitHubError extends Error {
   status: number;
@@ -67,11 +67,11 @@ export async function listRepositories(token: string): Promise<Repository[]> {
   const pages = await Promise.all(installations.slice(0, 20).map(async installation => {
     const { repositories } = await github<{ repositories: GitHubRepo[] }>(token,
       `/user/installations/${installation.id}/repositories?per_page=100`);
-    return repositories;
+    return repositories.map(repo => ({ id: repo.id, fullName: repo.full_name, private: repo.private,
+      defaultBranch: repo.default_branch, htmlUrl: repo.html_url, canPush: Boolean(repo.permissions?.push),
+      installationId: installation.id }));
   }));
-  return pages.flat().map(repo => ({ id: repo.id, fullName: repo.full_name, private: repo.private,
-    defaultBranch: repo.default_branch, htmlUrl: repo.html_url, canPush: Boolean(repo.permissions?.push) }))
-    .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return pages.flat().sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
 export async function importContext(token: string, name: string) {
