@@ -3,7 +3,7 @@ export type ConformanceReport = { pass: boolean; unmet: string[]; unrelated: str
 export class ReviewError extends Error {}
 
 function validList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length <= 25 && value.every(item => typeof item === "string" && item.length <= 300);
+  return Array.isArray(value) && value.length <= 25 && value.every(item => typeof item === "string" && item.trim().length > 0 && item.length <= 300);
 }
 
 export function parseConformanceReport(report: unknown): ConformanceReport {

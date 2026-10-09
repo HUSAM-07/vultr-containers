@@ -1,3 +1,5 @@
+import { acceptanceCriteria } from "./fava-criteria.ts";
+
 export type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string; canPush: boolean; installationId: number };
 
 export class GitHubError extends Error {
@@ -76,6 +78,8 @@ export function validateSpec(title: string, content: string) {
     cleanContent.includes("Describe what must be built") ||
     cleanContent.includes("Describe an observable behavior"))
     throw new GitHubError(400, "Replace the template guidance with your own specification");
+  if (acceptanceCriteria(cleanContent).length > 25)
+    throw new GitHubError(400, "Use at most 25 acceptance criteria per specification");
   return { title: cleanTitle, content: cleanContent };
 }
 

@@ -46,3 +46,25 @@ test("Claude spec review uses Anthropic Messages and reads its text block", asyn
     assert.equal(report.pass, true);
   } finally { globalThis.fetch = original; }
 });
+
+test("a passing review needs evidence for every acceptance criterion", async () => {
+  const original = globalThis.fetch;
+  const spec = "## Acceptance criteria\n\n- Export visible rows.\n- Preserve the selected column order\n  including hidden columns.";
+  const diff = "diff --git a/export.ts b/export.ts\n+exportVisibleRows();";
+  try {
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.match(body.messages[1].content, /1\. Export visible rows\.\n2\. Preserve the selected column order including hidden columns\./);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [], unrelated: [],
+        evidence: ["export.ts adds visible rows"] }) } }] });
+    };
+    await assert.rejects(reviewConformance(env, run, spec, diff), /inconsistent verdict/);
+    globalThis.fetch = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true,
+      unmet: [], unrelated: [], evidence: ["export.ts adds visible rows", "export.ts preserves column order"] }) } }] });
+    assert.equal((await reviewConformance(env, run, spec, diff)).evidence.length, 2);
+    globalThis.fetch = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true,
+      unmet: [], unrelated: [], evidence: ["export.ts adds visible rows", "  "] }) } }] });
+    await assert.rejects(reviewConformance(env, run, spec, diff), /inconsistent verdict/);
+    assert.equal((await reviewConformance(env, run, `## Acceptance criteria\n\n${Array.from({ length: 26 }, (_, i) => `- Check ${i + 1}`).join("\n")}`, diff)).pass, false);
+  } finally { globalThis.fetch = original; }
+});

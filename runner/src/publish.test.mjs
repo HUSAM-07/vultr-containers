@@ -34,7 +34,7 @@ test("new draft PR includes model-generated spec evidence without claiming tests
     await publishImplementation(env, run, [{ path: "src/a.ts", mode: "100644", content: "YQ==" }],
       "Done", review);
     assert.equal(body.draft, true);
-    assert.match(body.body, /Automated spec review evidence \(model-generated\):\n- The export action was added/);
+    assert.match(body.body, /Automated spec review evidence \(model-generated\):\n1\. The export action was added/);
     assert.match(body.body, /Test results and Preview availability must be checked separately/);
   } finally { globalThis.fetch = original; }
 });

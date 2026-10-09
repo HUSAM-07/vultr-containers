@@ -108,6 +108,8 @@ test("spec validation rejects template guidance", () => {
   assert.throws(() => chooseModel("arbitrary-model"), /supported agent model/);
   assert.throws(() => validateSpec("Export dashboard", "## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test."), /Replace the template/);
   assert.equal(validateSpec("Export dashboard", spec).title, "Export dashboard");
+  assert.throws(() => validateSpec("Export dashboard", spec.replace("- The CSV includes exactly the visible rows and columns.",
+    Array.from({ length: 26 }, (_, index) => `- Check export behavior ${index + 1}.`).join("\n"))), /at most 25 acceptance criteria/);
 });
 
 test("new repositories are initialized for spec branches and names are validated before creation", async () => {

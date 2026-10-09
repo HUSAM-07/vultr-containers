@@ -72,7 +72,7 @@ export async function publishImplementation(env: Env, run: PublishRun, files: Up
     title: `impl: spec #${run.specPullNumber}`, head: branch, base: run.defaultBranch, draft: true,
     body: `Implements [spec #${run.specPullNumber}](https://github.com/${run.repository}/pull/${run.specPullNumber}) from \`${run.specPath}\`.\n\n` +
       `Pinned source: \`${run.sha}\`\n\nRun: \`${run.id}\`\n\nAgent summary:\n${summary.slice(0, 1000)}\n\n` +
-      `Automated spec review evidence (model-generated):\n${review.evidence.map(item => `- ${item.replace(/\s+/g, " ").trim()}`).join("\n")}\n\n` +
+      `Automated spec review evidence (model-generated):\n${review.evidence.map((item, index) => `${index + 1}. ${item.replace(/\s+/g, " ").trim()}`).join("\n")}\n\n` +
       "Inspect the full review report and run artifacts in Fava before approving this draft. Test results and Preview availability must be checked separately.",
   });
   if (!pull) throw Error("Could not open implementation pull request");

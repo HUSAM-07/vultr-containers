@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { parseConformanceReport, type ConformanceReport } from "@/lib/fava-review";
+import { cx } from "@/utils/cx";
 
 export function RunReview({ id }: { id: string }) {
   const [open, setOpen] = useState(false);
@@ -31,13 +32,14 @@ export function RunReview({ id }: { id: string }) {
           {review.pass ? "Model review passed" : "Model review rejected this change"}
         </p>
         <p className="text-caption-1-regular text-text-tertiary">This is a model judgment. Check the evidence against the merged spec and test results.</p>
-        {(["evidence", "unmet", "unrelated"] as const).filter(kind => review[kind].length).map(kind =>
-          <section key={kind}>
+        {(["evidence", "unmet", "unrelated"] as const).filter(kind => review[kind].length).map(kind => {
+          const List = kind === "evidence" ? "ol" : "ul";
+          return <section key={kind}>
             <h4 className="text-caption-1-semibold text-text-secondary">{kind === "evidence" ? "Evidence" : kind === "unmet" ? "Unmet criteria" : "Unrelated changes"}</h4>
-            <ul className="mt-2 list-disc space-y-1 ps-5 text-caption-1-regular text-text-secondary">
+            <List className={cx("mt-2 space-y-1 ps-5 text-caption-1-regular text-text-secondary", kind === "evidence" ? "list-decimal" : "list-disc")}>
               {review[kind].map((item, index) => <li key={index}>{item}</li>)}
-            </ul>
-          </section>)}
+            </List>
+          </section>})}
         <a href={`/api/github/runs/${id}/artifact?kind=review`} target="_blank" rel="noreferrer"
           className="inline-block text-caption-1-semibold text-accent-600 hover:underline">Raw report</a>
       </>}
