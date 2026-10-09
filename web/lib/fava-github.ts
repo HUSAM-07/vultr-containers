@@ -161,14 +161,24 @@ export async function importContext(token: string, name: string) {
   const tree = await github<{ tree: { path: string; type: string }[]; truncated: boolean }>(token,
     `/repos/${repo}/git/trees/${commitSha}?recursive=1`);
   const paths = tree.tree.filter(item => item.type === "blob").map(item => item.path);
-  const candidates = ["README.md", "AGENTS.md", "package.json", "pyproject.toml", "Cargo.toml",
-    "docs/architecture.md", "docs/README.md", "specs/README.md"];
-  const files = await Promise.all(candidates.filter(path => paths.includes(path)).slice(0, 5).map(async path => {
+  const nestedInstructions = paths.filter(path =>
+    /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/){1,3}(?:AGENTS|CLAUDE|GEMINI)\.md$/.test(path))
+    .sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+  const candidates = ["README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md",
+    ".github/copilot-instructions.md", ...nestedInstructions, "package.json", "pyproject.toml",
+    "Cargo.toml", "docs/architecture.md", "docs/README.md", "specs/README.md"];
+  const files = await Promise.all(candidates.filter(path => paths.includes(path)).slice(0, 8).map(async path => {
     const file = await github<{ content: string; encoding: string; size: number }>(token,
-      `/repos/${repo}/contents/${path}?ref=${commitSha}`);
-    if (file.encoding !== "base64" || file.size > 50_000) return null;
-    const binary = atob(file.content.replace(/\s/g, ""));
-    return { path, text: new TextDecoder().decode(Uint8Array.from(binary, character => character.charCodeAt(0))) };
+      `/repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${commitSha}`);
+    if (file.encoding !== "base64" || typeof file.content !== "string" ||
+      !Number.isSafeInteger(file.size) || file.size < 0 || file.size > 50_000 ||
+      file.content.length > 70_000) return null;
+    try {
+      const binary = atob(file.content.replace(/\s/g, ""));
+      if (binary.length !== file.size) return null;
+      return { path, text: new TextDecoder("utf-8", { fatal: true }).decode(
+        Uint8Array.from(binary, character => character.charCodeAt(0))) };
+    } catch { return null; }
   }));
   return { repository: repo, defaultBranch: metadata.default_branch, commitSha, paths: paths.slice(0, 400),
     truncated: tree.truncated || paths.length > 400, files: files.filter(file => file !== null) };

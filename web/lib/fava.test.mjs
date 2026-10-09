@@ -229,6 +229,37 @@ test("context import reads repository instructions and a bounded file map", asyn
   } finally { globalThis.fetch = original; }
 });
 
+test("context import includes nested agent instructions and skips invalid text", async () => {
+  const original = globalThis.fetch;
+  const commitSha = "b".repeat(40);
+  const requested = [];
+  const contents = {
+    "README.md": "Project overview",
+    ".github/copilot-instructions.md": "Use the project conventions",
+    "docs/CLAUDE.md": null,
+    "src/AGENTS.md": "Instructions for source files",
+    "package.json": '{"name":"example"}',
+  };
+  globalThis.fetch = async url => {
+    const path = String(url);
+    if (path.endsWith("/repos/owner/repo")) return Response.json({ default_branch: "main" });
+    if (path.endsWith("/branches/main")) return Response.json({ commit: { sha: commitSha } });
+    if (path.includes("/git/trees/")) return Response.json({ tree: Object.keys(contents).map(name =>
+      ({ path: name, type: "blob" })), truncated: false });
+    const name = path.split("/contents/")[1]?.split("?ref=")[0];
+    requested.push(path);
+    const bytes = contents[name] === null ? Buffer.from([0xff]) : Buffer.from(contents[name]);
+    return Response.json({ content: bytes.toString("base64"), encoding: "base64", size: bytes.length });
+  };
+  try {
+    const context = await importContext("test-token", "owner/repo");
+    assert.deepEqual(context.files.map(file => file.path), ["README.md", ".github/copilot-instructions.md",
+      "src/AGENTS.md", "package.json"]);
+    assert.equal(requested.length, 5);
+    assert.ok(requested.every(path => path.endsWith(`?ref=${commitSha}`)));
+  } finally { globalThis.fetch = original; }
+});
+
 test("context import stops when GitHub does not return a commit SHA", async () => {
   const original = globalThis.fetch;
   let calls = 0;
