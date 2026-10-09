@@ -75,7 +75,7 @@ export default function WorkspacePage() {
     setRepo(name); setContext(null); setSpecs([]); setRuns([]); setPublished(null); setError(""); setRunError(""); setBusy(true);
     try {
       const linked = existing || await json<Project>("/api/github?action=project", { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: name, accountId: workspaceId }) });
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: name, ...(workspaceId ? { accountId: workspaceId } : {}) }) });
       if (requestId !== choiceId.current) return;
       setWorkspaceId(linked.accountId);
       if (!existing) setProjects(current => [linked, ...current.filter(item => item.id !== linked.id)]);
@@ -103,6 +103,7 @@ export default function WorkspacePage() {
       queueMicrotask(() => {
         restoreDraft(savedRepo);
         if (savedRepo) setRepo(savedRepo);
+        setPublicRepoInput(savedRepo);
         setRestored(true);
       });
     } catch { queueMicrotask(() => setRestored(true)); }
@@ -115,8 +116,7 @@ export default function WorkspacePage() {
         setRepos(available); setProjects(linked); setAccounts(workspaces);
         const prior = linked.find(project => project.repository === savedRepo);
         setWorkspaceId(prior?.accountId || workspaces[0]?.id || "");
-        if (prior && available.some(item => item.fullName === savedRepo)) await choose(savedRepo, prior);
-        else if (savedRepo) { restoreDraft(""); setRepo(""); }
+        if (savedRepo && available.some(item => item.fullName === savedRepo)) await choose(savedRepo, prior);
       }
     }).catch(cause => setError((cause as Error).message));
   }, [choose]);
@@ -243,9 +243,9 @@ export default function WorkspacePage() {
             onClick={() => void choose(item.fullName, linked)} className={cx("!h-auto !min-h-9 !justify-start !whitespace-normal !text-start", repo === item.fullName && "!bg-background-tertiary-default")} leadingIcon={RiFolder3Line}>
             {item.fullName}{linked ? ` · ${linked.accountName}` : ""}</Button>;
         }) : <p className="rounded-xl border border-border-button-default p-3 text-body-regular text-text-secondary">No repositories are available to this GitHub App yet.</p>}</div> : <div className="mt-3 rounded-xl border border-dashed border-border-button-default p-4 text-body-regular text-text-secondary">Your repositories appear here after you connect GitHub.</div>}
-        {session && !session.connected && <form className="mt-5 flex flex-col gap-3 border-t border-separator-border pt-5" onSubmit={event => { event.preventDefault(); void importPublic(); }}>
+        {session && (!session.connected || !selectedProject) && <form className="mt-5 flex flex-col gap-3 border-t border-separator-border pt-5" onSubmit={event => { event.preventDefault(); void importPublic(); }}>
           <h3 className="text-body-medium">Start with a public repository</h3>
-          <p className="text-caption-1-regular text-text-secondary">Import its file map and instructions now. Connect GitHub to publish your spec.</p>
+          <p className="text-caption-1-regular text-text-secondary">Import its file map and instructions now. {session.connected ? "Install the Fava App on this repository to publish your spec." : "Connect GitHub to publish your spec."}</p>
           <Input label="GitHub repository" size="small" placeholder="owner/repository" value={publicRepoInput} onChange={setPublicRepoInput} />
           <Button type="submit" size="small" variant="secondary" disabled={busy || !publicRepoInput.trim()}>{busy ? "Importing…" : "Import public context"}</Button>
           {publicImportError && <p role="alert" className="text-caption-1-regular text-text-error-primary">{publicImportError}</p>}
@@ -273,8 +273,9 @@ export default function WorkspacePage() {
       </aside>
 
       <section className="min-w-0 rounded-3xl border border-border-button-default bg-background-secondary-default p-5 sm:p-8">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-caption-1-semibold uppercase tracking-widest text-accent-600">Specification editor</p><h1 className="mt-2 text-title-1-medium">Start with intent</h1><p className="mt-2 max-w-2xl text-body-regular text-text-secondary">A merged spec becomes the contract for implementation. Describe the result clearly before asking an agent to write code.</p></div><span className="inline-flex items-center gap-2 rounded-full bg-background-tertiary-default px-3 py-2 text-caption-1-semibold text-text-secondary"><RiBookOpenLine className="size-4" aria-hidden />{context?.repository || (session?.connected ? repo : "") || "No repository selected"}</span></div>
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-caption-1-semibold uppercase tracking-widest text-accent-600">Specification editor</p><h1 className="mt-2 text-title-1-medium">Start with intent</h1><p className="mt-2 max-w-2xl text-body-regular text-text-secondary">A merged spec becomes the contract for implementation. Describe the result clearly before asking an agent to write code.</p></div><span className="inline-flex items-center gap-2 rounded-full bg-background-tertiary-default px-3 py-2 text-caption-1-semibold text-text-secondary"><RiBookOpenLine className="size-4" aria-hidden />{repo || "No repository selected"}</span></div>
         {!session?.connected && <div className="mt-7 rounded-2xl border border-border-button-default bg-background-primary-default p-5"><div className="flex items-center gap-3"><RiGithubFill className="size-6" aria-hidden /><div><h2 className="text-body-medium">Connect GitHub to publish specs</h2><p className="text-body-regular text-text-secondary">You can write a draft now. Connect an account when you are ready to save it as a pull request.</p></div></div><div className="mt-4">{session?.configured ? <ButtonLink href="/api/github/auth/start" leadingIcon={RiGithubFill}>Continue with GitHub</ButtonLink> : <p className="text-body-regular text-text-secondary">The Fava GitHub App has not been configured for this deployment yet.</p>}</div></div>}
+        {session?.connected && repo && !selectedProject && <div className="mt-7 rounded-2xl border border-border-button-default bg-background-primary-default p-5"><h2 className="text-body-medium">Connect this repository to publish</h2><p className="mt-2 text-body-regular text-text-secondary">Your draft is saved. Install the Fava GitHub App on {repo}, then refresh repositories and select it to open a spec pull request.</p>{session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="secondary" size="small" className="mt-4">Install GitHub App</ButtonLink>}</div>}
         {session?.connected && !repo && <div className="mt-7 rounded-2xl border border-dashed border-border-button-default bg-background-primary-default p-5"><h2 className="text-body-medium">Choose a repository to import</h2><p className="mt-2 text-body-regular text-text-secondary">Fava will read its file map and project instructions. The code stays in GitHub.</p></div>}
         <div className="mt-8 grid gap-6"><Input label="Specification title" placeholder="What should change?" value={title} onChange={setTitle} maxLength={120} /><Textarea label="Specification" value={content} onChange={setContent} rows={16} resize="vertical" maxLength={40000} hint="Include the outcome, scope, and acceptance criteria. Your draft is saved in this browser." /></div>
         <div className="mt-6"><p className="text-body-medium">Implementation agent</p><p className="mt-1 text-body-regular text-text-secondary">Fava records this choice with the spec PR. Work is queued only after the spec merges.</p><div role="group" aria-label="Implementation agent" className="mt-3 flex flex-wrap gap-2">{agentModels.map(option => <Button key={option.model} variant={model === option.model ? "primary" : "secondary"} size="small" aria-pressed={model === option.model} onClick={() => setModel(option.model)}>{option.label}</Button>)}</div></div>
