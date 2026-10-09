@@ -91,6 +91,22 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
   } finally { globalThis.fetch = originalFetch; sqlite.close(); }
 });
 
+test("running agents expose bounded logs before completion and retain them on timeout", async () => {
+  const { sqlite, env, writes, wasStopped } = fixture();
+  try {
+    await dispatch(env);
+    await reconcile(env);
+    assert.equal(sqlite.prepare("SELECT status, artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId).status, "running");
+    assert.equal(sqlite.prepare("SELECT artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId).artifactKey, `runs/${runId}`);
+    assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
+    sqlite.prepare("UPDATE runs SET started_at = ? WHERE id = ?").run(Date.now() - 46 * 60_000, runId);
+    await reconcile(env);
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId) },
+      { status: "failed", artifactKey: `runs/${runId}` });
+    assert.equal(wasStopped(), true);
+  } finally { sqlite.close(); }
+});
+
 test("spec review rejects unrelated changes before GitHub publication", async () => {
   const { sqlite, env, writes, setTask } = fixture();
   const original = globalThis.fetch;

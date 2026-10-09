@@ -110,6 +110,16 @@ export default function WorkspacePage() {
     try { localStorage.setItem("fava:draft", JSON.stringify({ repo, title, content, model })); } catch { /* Local drafts are optional. */ }
   }, [repo, title, content, model, restored]);
 
+  useEffect(() => {
+    if (!session?.connected || !repo || !projects.some(project => project.repository === repo)) return;
+    let current = true;
+    const timer = window.setInterval(() => {
+      json<AgentRun[]>(`/api/github?action=runs&repo=${encodeURIComponent(repo)}`)
+        .then(value => { if (current) setRuns(value); }).catch(() => {});
+    }, 20_000);
+    return () => { current = false; window.clearInterval(timer); };
+  }, [repo, session?.connected, projects]);
+
   function selectWorkspace(id: string) {
     choiceId.current += 1;
     setWorkspaceId(id); setRepo(""); setContext(null); setSpecs([]); setRuns([]);
@@ -180,7 +190,7 @@ export default function WorkspacePage() {
               {run.error && <p className="mt-2 text-body-regular text-text-error-primary">{run.error}</p>}
               {run.artifactKey && <div className="mt-2 flex flex-wrap gap-3">
                 {(run.status === "succeeded" || run.error?.startsWith("Spec review rejected") ? ["diff", "review", "stdout", "stderr"] : ["stdout", "stderr"]).map(kind =>
-                  <a key={kind} href={`/api/github/runs/${run.id}/artifact?kind=${kind}`} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">{kind === "diff" ? "Code diff" : kind === "review" ? "Spec review" : kind === "stdout" ? "Agent log" : "Error log"}</a>)}
+                  <a key={kind} href={`/api/github/runs/${run.id}/artifact?kind=${kind}`} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">{kind === "diff" ? "Code diff" : kind === "review" ? "Spec review" : kind === "stdout" ? run.status === "running" ? "Agent log (live)" : "Agent log" : "Error log"}</a>)}
               </div>}
               {run.previewUrl?.startsWith("https://") && <a href={run.previewUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Preview <RiExternalLinkLine className="size-4" aria-hidden /></a>}
             </li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">No implementation run has been queued for this project.</p>}

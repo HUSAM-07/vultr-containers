@@ -22,7 +22,7 @@ async function running(env: Env) {
 }
 
 async function fail(env: Env, id: string, error: string, artifactKey: string | null = null) {
-  await env.DB.prepare("UPDATE runs SET status = 'failed', error = ?, artifact_key = ?, completed_at = ? WHERE id = ? AND status = 'running'")
+  await env.DB.prepare("UPDATE runs SET status = 'failed', error = ?, artifact_key = COALESCE(?, artifact_key), completed_at = ? WHERE id = ? AND status = 'running'")
     .bind(error.slice(0, 2000), artifactKey, Date.now(), id).run();
 }
 
@@ -46,6 +46,12 @@ export async function reconcile(env: Env) {
         if (startedAt && Date.now() - startedAt > 45 * 60_000) {
           await fail(env, id, "Agent exceeded the 45-minute run limit");
           await sandbox.stop();
+        } else {
+          try {
+            const prefix = await saveLogs(env, id, sandbox);
+            await env.DB.prepare("UPDATE runs SET artifact_key = ? WHERE id = ? AND status = 'running' AND artifact_key IS NULL")
+              .bind(prefix, id).run();
+          } catch (error) { console.error("Live log snapshot failed", id, error); }
         }
         continue;
       }
