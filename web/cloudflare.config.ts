@@ -10,7 +10,7 @@ export default defineConfig({
     assets: { notFoundHandling: "none" },
     env: {
       ASSETS: bindings.assets(),
-      DB: bindings.d1({ name: "fava-core" }),
+      DB: bindings.d1({ name: "fava-core", id: "7d58c3df-31b0-40ef-823a-11b59bbe2a84" }),
       ARTIFACTS: bindings.r2({ name: "fava-run-artifacts" }),
       FAVA_SESSION_SECRET: bindings.secret(),
       GITHUB_APP_CLIENT_ID: bindings.secret(),
