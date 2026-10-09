@@ -95,6 +95,17 @@ export async function github<T>(token: string, path: string, method = "GET", bod
 type GitHubRepo = { id: number; full_name: string; private: boolean; default_branch: string; html_url: string;
   permissions?: { push?: boolean } };
 
+export async function createRepository(token: string, owner: string, name: string, isPrivate: boolean) {
+  const fullName = parseRepo(`${owner}/${name.trim()}`);
+  const created = await github<GitHubRepo>(token, "/user/repos", "POST", {
+    name: fullName.split("/")[1], private: isPrivate, auto_init: true,
+  });
+  if (!Number.isSafeInteger(created.id) || created.id <= 0 ||
+    created.full_name?.toLowerCase() !== fullName.toLowerCase())
+    throw new GitHubError(502, "GitHub returned an unexpected repository; check your GitHub account before retrying");
+  return { id: created.id, fullName: created.full_name, htmlUrl: `https://github.com/${fullName}` };
+}
+
 async function pages<T>(token: string, path: string, field: "installations" | "repositories", maxPages: number) {
   const items: T[] = [];
   for (let page = 1; page <= maxPages; page++) {

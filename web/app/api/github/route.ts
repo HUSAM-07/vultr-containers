@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { accountAccess, cancelRun, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
-import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
+import { createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
 import { refreshRunPreviews } from "@/lib/fava-run-previews";
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
     clearSession(response);
     return response;
   }
-  if (action !== "spec" && action !== "project" && action !== "cancelRun")
+  if (action !== "spec" && action !== "project" && action !== "createRepository" && action !== "cancelRun")
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
     const auth = await readSession(request, env.DB);
@@ -91,6 +91,30 @@ export async function POST(request: NextRequest) {
       const project = await linkProject(env.DB, accountId, selected);
       const response = NextResponse.json({ ...project, accountId, accountName: account.name,
         role: account.role, accountRole: account.role }, { status: 201 });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
+    if (action === "createRepository") {
+      const body = await readJson(request, 1_000);
+      if (!body || typeof body !== "object" || !("name" in body) || typeof body.name !== "string" ||
+        !("private" in body) || typeof body.private !== "boolean")
+        throw new GitHubError(400, "Choose a repository name and visibility");
+      const accountId = "accountId" in body && typeof body.accountId === "string" && body.accountId
+        ? body.accountId : await ensurePersonalAccount(env.DB, auth.session.user);
+      const account = await accountAccess(env.DB, auth.session.user.id, accountId, "admin");
+      const created = await createRepository(auth.session.token, auth.session.user.login, body.name, body.private);
+      let project = null;
+      let connectionError = null;
+      try {
+        const selected = (await listRepositories(auth.session.token)).find(item => item.id === created.id);
+        if (selected) project = { ...await linkProject(env.DB, accountId, selected), accountId,
+          accountName: account.name, role: account.role, accountRole: account.role };
+      } catch (error) {
+        console.error("New repository was created but could not be linked", created.fullName,
+          error instanceof Error ? error.name : "unknown");
+        connectionError = error instanceof GitHubError ? error.message : "Fava could not check the App connection. Try again shortly.";
+      }
+      const response = NextResponse.json({ repository: created, project, connectionError }, { status: 201 });
       if (auth.refreshed) await setSession(response, request, auth.session);
       return response;
     }

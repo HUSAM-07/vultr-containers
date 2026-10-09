@@ -43,6 +43,9 @@ export default function WorkspacePage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [createdRepo, setCreatedRepo] = useState<{ fullName: string; htmlUrl: string; connected: boolean; connectionError: string | null } | null>(null);
   const [repo, setRepo] = useState("");
   const [context, setContext] = useState<Context | null>(null);
   const [title, setTitle] = useState("");
@@ -76,8 +79,9 @@ export default function WorkspacePage() {
       ]);
       if (requestId !== choiceId.current) return;
       setContext(imported); setSpecs(proposals); setRuns(recentRuns);
+      return true;
     }
-    catch (cause) { if (requestId === choiceId.current) setError((cause as Error).message); }
+    catch (cause) { if (requestId === choiceId.current) setError((cause as Error).message); return false; }
     finally { if (requestId === choiceId.current) setBusy(false); }
   }, [workspaceId]);
 
@@ -128,7 +132,41 @@ export default function WorkspacePage() {
   function selectWorkspace(id: string) {
     choiceId.current += 1;
     setWorkspaceId(id); setRepo(""); setContext(null); setSpecs([]); setRuns([]);
-    setPublished(null); setBusy(false); setError(""); setRunError("");
+    setPublished(null); setCreatedRepo(null); setBusy(false); setError(""); setRunError("");
+  }
+
+  async function createProject() {
+    if (!session?.connected || !newRepoName.trim() || busy) return;
+    setBusy(true); setError(""); setCreatedRepo(null);
+    try {
+      const result = await json<{ repository: { fullName: string; htmlUrl: string }; project: Project | null; connectionError: string | null }>(
+        "/api/github?action=createRepository", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newRepoName, private: newRepoPrivate, accountId: workspaceId }) });
+      setNewRepoName("");
+      setCreatedRepo({ ...result.repository, connected: Boolean(result.project), connectionError: result.connectionError });
+      if (result.project) {
+        const linked = result.project;
+        setProjects(current => [linked, ...current.filter(item => item.id !== linked.id)]);
+        try { setRepos(await json<Repository[]>("/api/github?action=repos")); }
+        catch { /* The repository was created and linked; a stale list can be refreshed later. */ }
+        await choose(result.repository.fullName, result.project);
+      }
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function connectCreated() {
+    if (!createdRepo || busy) return;
+    setError("");
+    try {
+      const available = await json<Repository[]>("/api/github?action=repos");
+      setRepos(available);
+      if (!available.some(item => item.fullName.toLowerCase() === createdRepo.fullName.toLowerCase())) {
+        setError("Add this repository to the Fava GitHub App installation, then check again.");
+        return;
+      }
+      if (await choose(createdRepo.fullName)) setCreatedRepo({ ...createdRepo, connected: true, connectionError: null });
+    } catch (cause) { setError((cause as Error).message); }
   }
 
   async function publish() {
@@ -178,7 +216,25 @@ export default function WorkspacePage() {
             onClick={() => void choose(item.fullName, linked)} className={cx("!h-auto !min-h-9 !justify-start !whitespace-normal !text-start", repo === item.fullName && "!bg-background-tertiary-default")} leadingIcon={RiFolder3Line}>
             {item.fullName}{linked ? ` · ${linked.accountName}` : ""}</Button>;
         }) : <p className="rounded-xl border border-border-button-default p-3 text-body-regular text-text-secondary">No repositories are available to this GitHub App yet.</p>}</div> : <div className="mt-3 rounded-xl border border-dashed border-border-button-default p-4 text-body-regular text-text-secondary">Your repositories appear here after you connect GitHub.</div>}
-        {session?.connected && <div className="mt-4 flex flex-wrap gap-2">{session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="secondary" size="small" leadingIcon={RiAddLine}>Install on repos</ButtonLink>}<ButtonLink href="https://github.com/new" target="_blank" rel="noreferrer" variant="ghost" size="small">New on GitHub</ButtonLink></div>}
+        {session?.connected && <div className="mt-5 border-t border-separator-border pt-5">
+          <h3 className="text-body-medium">New project</h3>
+          <p className="mt-1 text-caption-1-regular text-text-secondary">Create a repository in your GitHub account, then write its first spec here.</p>
+          <form className="mt-3 flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void createProject(); }}>
+            <Input label="Repository name" size="small" placeholder="my-project" value={newRepoName} onChange={setNewRepoName} maxLength={100} isRequired />
+            <div role="group" aria-label="Repository visibility" className="flex gap-2">
+              <Button type="button" variant={newRepoPrivate ? "primary" : "secondary"} size="small" aria-pressed={newRepoPrivate} onClick={() => setNewRepoPrivate(true)}>Private</Button>
+              <Button type="button" variant={!newRepoPrivate ? "primary" : "secondary"} size="small" aria-pressed={!newRepoPrivate} onClick={() => setNewRepoPrivate(false)}>Public</Button>
+            </div>
+            <Button type="submit" size="small" leadingIcon={RiAddLine} disabled={busy || !newRepoName.trim() || !workspaceId || !["owner", "admin"].includes(accounts.find(account => account.id === workspaceId)?.role || "")}>{busy ? "Creating…" : "Create repository"}</Button>
+          </form>
+          {createdRepo && <div role="status" className="mt-3 rounded-xl border border-border-button-default bg-background-primary-default p-3">
+            <a href={createdRepo.htmlUrl} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">{createdRepo.fullName} <RiExternalLinkLine className="inline size-4" aria-hidden /></a>
+            <p className="mt-1 text-caption-1-regular text-text-secondary">{createdRepo.connected ? "Created and connected. Start writing its specification." : "Created on GitHub. Connect it to Fava to continue."}</p>
+            {createdRepo.connectionError && <p className="mt-1 text-caption-1-regular text-text-error-primary">{createdRepo.connectionError}</p>}
+            {!createdRepo.connected && <div className="mt-3 flex flex-wrap gap-2">{session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="secondary" size="small">Install App</ButtonLink>}<Button variant="ghost" size="small" onClick={() => void connectCreated()}>Check connection</Button></div>}
+          </div>}
+          {session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="ghost" size="small" className="mt-3" leadingIcon={RiAddLine}>Connect existing repository</ButtonLink>}
+        </div>}
         <div className="mt-auto border-t border-separator-border pt-5">{session?.connected ? <div className="flex items-center gap-2"><span className="grid size-8 place-items-center rounded-full bg-background-tertiary-default text-body-medium">{session.user?.login.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 truncate text-body-medium">{session.user?.login}</span><Button variant="ghost" size="xs" iconOnly leadingIcon={RiLogoutBoxLine} aria-label="Disconnect GitHub" onClick={() => void logout()} /></div> : <p className="text-caption-1-regular text-text-tertiary">Your draft stays in this browser until it is published to GitHub.</p>}</div>
       </aside>
 

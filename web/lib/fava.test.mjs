@@ -8,7 +8,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { encryptToken } from "./fava-cloudflare.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
-import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
+import { createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
@@ -73,6 +73,23 @@ test("spec validation rejects template guidance", () => {
   assert.throws(() => chooseModel("arbitrary-model"), /supported agent model/);
   assert.throws(() => validateSpec("Export dashboard", "## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test."), /Replace the template/);
   assert.equal(validateSpec("Export dashboard", spec).title, "Export dashboard");
+});
+
+test("new repositories are initialized for spec branches and names are validated before creation", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), method: init.method, body: JSON.parse(init.body) });
+    return Response.json({ id: 42, full_name: "owner/new-project" }, { status: 201 });
+  };
+  try {
+    assert.deepEqual(await createRepository("test-token", "owner", " new-project ", true),
+      { id: 42, fullName: "owner/new-project", htmlUrl: "https://github.com/owner/new-project" });
+    assert.deepEqual(requests, [{ url: "https://api.github.com/user/repos", method: "POST",
+      body: { name: "new-project", private: true, auto_init: true } }]);
+    await assert.rejects(createRepository("test-token", "owner", "../bad", true), /valid GitHub repository/);
+    assert.equal(requests.length, 1);
+  } finally { globalThis.fetch = original; }
 });
 
 test("publishing a spec creates a branch, file, and PR in that order", async () => {
