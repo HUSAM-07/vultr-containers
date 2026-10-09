@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { importContext, publishSpec, validateSpec } from "./fava-github.ts";
+import { importContext, listSpecPullRequests, publishSpec, validateSpec } from "./fava-github.ts";
 import { seal, unseal } from "./fava-session.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
@@ -57,6 +57,30 @@ test("context import reads repository instructions and a bounded file map", asyn
   } finally { globalThis.fetch = original; }
 });
 
+test("spec pipeline includes only single-file proposals to the default branch", async () => {
+  const original = globalThis.fetch;
+  const replies = [
+    { default_branch: "main" },
+    [
+      { number: 4, title: "spec: Export", html_url: "https://github.com/owner/repo/pull/4", state: "closed",
+        merged_at: "2026-10-09T00:00:00Z", merge_commit_sha: "merged-sha", head: { ref: "spec/export-123" }, base: { ref: "main" } },
+      { number: 5, title: "spec: Unsafe", html_url: "https://github.com/owner/repo/pull/5", state: "open",
+        merged_at: null, merge_commit_sha: null, head: { ref: "spec/unsafe-123" }, base: { ref: "main" } },
+      { number: 6, title: "Other branch", head: { ref: "feature/other" }, base: { ref: "main" } },
+    ],
+    [{ filename: "specs/export-123.md" }],
+    [{ filename: "specs/unsafe-123.md" }, { filename: "src/extra.ts" }],
+  ];
+  globalThis.fetch = async () => Response.json(replies.shift());
+  try {
+    const proposals = await listSpecPullRequests("test-token", "owner/repo");
+    assert.equal(proposals.length, 1);
+    assert.deepEqual(proposals[0], { number: 4, title: "spec: Export",
+      url: "https://github.com/owner/repo/pull/4", path: "specs/export-123.md",
+      status: "merged", mergedCommitSha: "merged-sha" });
+  } finally { globalThis.fetch = original; }
+});
+
 test("session cookie is encrypted and rejects tampering", async () => {
   process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
   const session = { token: "sensitive-token", expiresAt: Date.now() + 1000,
@@ -64,5 +88,5 @@ test("session cookie is encrypted and rejects tampering", async () => {
   const cookie = await seal(session);
   assert.equal(cookie.includes(session.token), false);
   assert.deepEqual(await unseal(cookie), session);
-  assert.equal(await unseal(cookie.slice(0, -1) + (cookie.endsWith("A") ? "B" : "A")), null);
+  assert.equal(await unseal((cookie.startsWith("A") ? "B" : "A") + cookie.slice(1)), null);
 });

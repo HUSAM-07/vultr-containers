@@ -11,7 +11,7 @@ The editable diagram is [fava-platform.drawio](fava-platform.drawio). Open it in
 5. An isolated agent workspace checks out that exact commit. The agent receives the spec, selected project/shared skills, bounded repository context, chosen model, and approved MCP connections. It opens an implementation PR with test evidence and a preview URL.
 6. A spec conformance check compares changed files and behavior against acceptance criteria. Unrelated changes are flagged or removed before the implementation PR is marked ready.
 
-The current implementation covers steps 1–3 locally once a GitHub App is configured. The web app also builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
+The current implementation covers steps 1–3 locally once a GitHub App is configured. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
 
 ## Boundaries and Cloudflare services
 

@@ -93,6 +93,25 @@ export async function importContext(token: string, name: string) {
     truncated: tree.truncated || paths.length > 400, files: files.filter(file => file !== null) };
 }
 
+export async function listSpecPullRequests(token: string, name: string) {
+  const repo = parseRepo(name);
+  const metadata = await github<GitHubRepo>(token, `/repos/${repo}`);
+  const pulls = await github<{ number: number; title: string; html_url: string; state: string;
+    merged_at: string | null; merge_commit_sha: string | null; head: { ref: string }; base: { ref: string } }[]>(token,
+    `/repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=50`);
+  const candidates = pulls.filter(pull => pull.head.ref.startsWith("spec/") &&
+    pull.base.ref === metadata.default_branch).slice(0, 10);
+  const proposals = await Promise.all(candidates.map(async pull => {
+    const files = await github<{ filename: string }[]>(token,
+      `/repos/${repo}/pulls/${pull.number}/files?per_page=100`);
+    if (files.length !== 1 || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(files[0].filename)) return null;
+    return { number: pull.number, title: pull.title, url: pull.html_url, path: files[0].filename,
+      status: pull.merged_at && pull.merge_commit_sha ? "merged" : pull.state === "open" ? "open" : "closed",
+      mergedCommitSha: pull.merged_at ? pull.merge_commit_sha : null };
+  }));
+  return proposals.filter(proposal => proposal !== null);
+}
+
 export async function publishSpec(token: string, name: string, title: string, content: string) {
   const repo = parseRepo(name);
   const { title: cleanTitle, content: cleanContent } = validateSpec(title, content);

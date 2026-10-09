@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GitHubError, importContext, listRepositories, publishSpec } from "@/lib/fava-github";
+import { GitHubError, importContext, listRepositories, listSpecPullRequests, publishSpec } from "@/lib/fava-github";
 import { clearSession, readSession, setSession } from "@/lib/fava-session";
 
 function fail(error: unknown) {
@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
     const repo = request.nextUrl.searchParams.get("repo") || "";
     const value = action === "repos" ? await listRepositories(auth.session.token)
       : action === "context" ? await importContext(auth.session.token, repo)
+      : action === "specs" ? await listSpecPullRequests(auth.session.token, repo)
       : null;
     if (!value) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const response = NextResponse.json(value);

@@ -13,6 +13,7 @@ type Session = { configured: boolean; connected: boolean; user: { login: string;
 type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean; htmlUrl: string };
 type Context = { repository: string; defaultBranch: string; paths: string[]; truncated: boolean; files: { path: string; text: string }[] };
 type Published = { url: string; number: number; branch: string; path: string };
+type SpecProposal = { number: number; title: string; url: string; path: string; status: "open" | "merged" | "closed"; mergedCommitSha: string | null };
 
 const initialSpec = `## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test.\n`;
 
@@ -31,6 +32,7 @@ export default function WorkspacePage() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState(initialSpec);
   const [published, setPublished] = useState<Published | null>(null);
+  const [specs, setSpecs] = useState<SpecProposal[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [restored, setRestored] = useState(false);
@@ -56,8 +58,15 @@ export default function WorkspacePage() {
   }, [repo, title, content, restored]);
 
   async function choose(name: string) {
-    setRepo(name); setContext(null); setPublished(null); setError(""); setBusy(true);
-    try { setContext(await json<Context>(`/api/github?action=context&repo=${encodeURIComponent(name)}`)); }
+    setRepo(name); setContext(null); setSpecs([]); setPublished(null); setError(""); setBusy(true);
+    try {
+      const selected = encodeURIComponent(name);
+      const [imported, proposals] = await Promise.all([
+        json<Context>(`/api/github?action=context&repo=${selected}`),
+        json<SpecProposal[]>(`/api/github?action=specs&repo=${selected}`),
+      ]);
+      setContext(imported); setSpecs(proposals);
+    }
     catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
@@ -68,6 +77,8 @@ export default function WorkspacePage() {
     try {
       setPublished(await json<Published>("/api/github?action=spec", { method: "POST",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo, title, content }) }));
+      try { setSpecs(await json<SpecProposal[]>(`/api/github?action=specs&repo=${encodeURIComponent(repo)}`)); }
+      catch { /* The pull request was created; a stale list should not report publication failure. */ }
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }
   }
@@ -97,7 +108,7 @@ export default function WorkspacePage() {
         <div className="mt-6 flex flex-wrap items-center gap-3"><Button onClick={() => void publish()} disabled={!session?.connected || !repo || busy} leadingIcon={RiGitPullRequestLine}>{busy ? "Working…" : "Create spec pull request"}</Button><span className="text-caption-1-regular text-text-tertiary">Requires write access to the selected repository.</span></div>
       </section>
 
-      <aside className="min-w-0 rounded-3xl border border-border-button-default bg-background-secondary-default p-5"><div className="flex items-center gap-2"><RiFileTextLine className="size-5 text-accent-600" aria-hidden /><h2 className="text-title-3-semibold">Imported context</h2></div>{context ? <><p className="mt-3 text-body-regular text-text-secondary">{context.repository} · {context.defaultBranch}</p><div className="mt-5 max-h-56 overflow-auto rounded-xl border border-border-button-default bg-background-primary-default p-3"><p className="text-caption-1-semibold uppercase tracking-widest text-text-tertiary">File map</p><ul className="mt-3 space-y-1">{context.paths.map(path => <li key={path} className="truncate font-mono text-caption-1-regular text-text-secondary" title={path}>{path}</li>)}</ul>{context.truncated && <p className="mt-2 text-caption-1-regular text-text-tertiary">Showing the first 400 paths.</p>}</div><div className="mt-5 space-y-3">{context.files.map(file => <details key={file.path} className="rounded-xl border border-border-button-default bg-background-primary-default p-3"><summary className="cursor-pointer text-body-medium">{file.path}</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-caption-1-regular text-text-secondary">{file.text}</pre></details>)}</div></> : <div className="mt-5 rounded-2xl border border-dashed border-border-button-default p-5 text-center"><RiFolder3Line className="mx-auto size-7 text-foreground-icon-tertiary" aria-hidden /><p className="mt-3 text-body-medium">No context imported yet</p><p className="mt-2 text-body-regular text-text-secondary">Choose a connected repository to inspect its structure and instructions.</p></div>}<div className="mt-6 border-t border-separator-border pt-5"><a href="/demo" className="inline-flex items-center gap-2 text-body-medium text-text-secondary hover:text-text-primary">View the current agent demo <RiArrowRightLine className="size-4" aria-hidden /></a></div></aside>
+      <aside className="min-w-0 rounded-3xl border border-border-button-default bg-background-secondary-default p-5"><div className="flex items-center gap-2"><RiFileTextLine className="size-5 text-accent-600" aria-hidden /><h2 className="text-title-3-semibold">Imported context</h2></div>{context ? <><p className="mt-3 text-body-regular text-text-secondary">{context.repository} · {context.defaultBranch}</p><div className="mt-5 max-h-56 overflow-auto rounded-xl border border-border-button-default bg-background-primary-default p-3"><p className="text-caption-1-semibold uppercase tracking-widest text-text-tertiary">File map</p><ul className="mt-3 space-y-1">{context.paths.map(path => <li key={path} className="truncate font-mono text-caption-1-regular text-text-secondary" title={path}>{path}</li>)}</ul>{context.truncated && <p className="mt-2 text-caption-1-regular text-text-tertiary">Showing the first 400 paths.</p>}</div><div className="mt-5 space-y-3">{context.files.map(file => <details key={file.path} className="rounded-xl border border-border-button-default bg-background-primary-default p-3"><summary className="cursor-pointer text-body-medium">{file.path}</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-caption-1-regular text-text-secondary">{file.text}</pre></details>)}</div><div className="mt-6 border-t border-separator-border pt-5"><div className="flex items-center justify-between gap-2"><h3 className="text-body-medium">Recent spec proposals</h3><Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh spec proposals" onClick={() => json<SpecProposal[]>(`/api/github?action=specs&repo=${encodeURIComponent(repo)}`).then(setSpecs).catch(cause => setError((cause as Error).message))} /></div>{specs.length ? <ul className="mt-3 space-y-2">{specs.map(spec => <li key={spec.number} className="rounded-xl border border-border-button-default bg-background-primary-default p-3"><a href={spec.url} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">#{spec.number} {spec.title}</a><p className="mt-1 text-caption-1-regular text-text-secondary">{spec.status === "merged" ? "Merged · implementation pending" : spec.status === "open" ? "Awaiting merge" : "Closed without merge"}</p></li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">No recent spec-only pull requests found.</p>}</div></> : <div className="mt-5 rounded-2xl border border-dashed border-border-button-default p-5 text-center"><RiFolder3Line className="mx-auto size-7 text-foreground-icon-tertiary" aria-hidden /><p className="mt-3 text-body-medium">No context imported yet</p><p className="mt-2 text-body-regular text-text-secondary">Choose a connected repository to inspect its structure and instructions.</p></div>}<div className="mt-6 border-t border-separator-border pt-5"><a href="/demo" className="inline-flex items-center gap-2 text-body-medium text-text-secondary hover:text-text-primary">View the current agent demo <RiArrowRightLine className="size-4" aria-hidden /></a></div></aside>
     </div>
   </main>;
 }
