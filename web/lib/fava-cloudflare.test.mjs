@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig } from "./fava-cloudflare.ts";
+import { CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths } from "./fava-cloudflare.ts";
+
+test("Wrangler config lookup follows the Worker Builds root directory", () => {
+  assert.deepEqual(wranglerConfigPaths("/"), ["wrangler.jsonc", "wrangler.json"]);
+  assert.deepEqual(wranglerConfigPaths("/apps/my worker"),
+    ["apps/my%20worker/wrangler.jsonc", "apps/my%20worker/wrangler.json"]);
+  assert.deepEqual(wranglerConfigPaths("./web/"), ["web/wrangler.jsonc", "web/wrangler.json"]);
+  assert.throws(() => wranglerConfigPaths("../private"), CloudflareError);
+});
 
 test("Cloudflare token is encrypted and round trips", async () => {
   process.env.FAVA_SESSION_SECRET = "a-secure-example-secret-with-more-than-32-characters";

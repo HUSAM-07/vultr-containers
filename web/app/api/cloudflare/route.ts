@@ -4,7 +4,7 @@ import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
-import { cloudflare, CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, type PreviewBuild } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type PreviewBuild } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
 type Trigger = { trigger_uuid: string; repo_connection_uuid?: string; build_token_uuid?: string;
@@ -30,8 +30,8 @@ async function workersFor(connection: Connection) {
   return { token, workers };
 }
 
-async function wranglerSource(token: string, repository: string, branch: string) {
-  for (const path of ["wrangler.jsonc", "wrangler.json"]) {
+async function wranglerSource(token: string, repository: string, branch: string, rootDirectory: string) {
+  for (const path of wranglerConfigPaths(rootDirectory)) {
     try {
       const file = await github<{ content: string; encoding: string; size: number }>(token,
         `/repos/${repository}/contents/${path}?ref=${encodeURIComponent(branch)}`);
@@ -40,7 +40,7 @@ async function wranglerSource(token: string, repository: string, branch: string)
       return new TextDecoder().decode(Uint8Array.from(binary, character => character.charCodeAt(0)));
     } catch (error) { if (!(error instanceof GitHubError) || error.status !== 404) throw error; }
   }
-  throw new CloudflareError(400, "Add wrangler.jsonc or wrangler.json at the repository root before enabling Previews");
+  throw new CloudflareError(400, "Add wrangler.jsonc or wrangler.json in the Worker Builds root directory before enabling Previews");
 }
 
 export async function GET(request: NextRequest) {
@@ -111,13 +111,14 @@ export async function POST(request: NextRequest) {
     const { token, workers } = await workersFor(connection);
     const worker = workers.find(item => item.id === body.workerName);
     if (!worker?.tag) throw new CloudflareError(400, "Select a Worker in the connected Cloudflare account");
-    verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch), worker.id);
     const triggers = await cloudflare<Trigger[]>(token,
       `/accounts/${connection.cloudflare_account_id}/builds/workers/${worker.tag}/triggers`);
     const production = triggers.find(item => item.branch_includes?.includes(project.defaultBranch) &&
       !item.branch_excludes?.includes(project.defaultBranch));
     if (!production?.repo_connection_uuid || !production.build_token_uuid)
       throw new CloudflareError(400, "Connect this Worker to the repository with Workers Builds first");
+    verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch,
+      production.root_directory || "/"), worker.id);
     const [owner, name] = body.repo.split("/");
     const repository = await github<{ id: number; owner: { id: number; login: string } }>(auth.session.token,
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);

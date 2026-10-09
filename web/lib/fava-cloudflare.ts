@@ -54,6 +54,15 @@ type WranglerConfig = { name?: string; previews?: Record<string, unknown>;
   d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[];
   durable_objects?: { bindings?: Binding[] } };
 
+export function wranglerConfigPaths(rootDirectory: string) {
+  const root = rootDirectory.replace(/^(?:\.\/|\/)|\/$/g, "");
+  const segments = root ? root.split("/") : [];
+  if (segments.some(segment => !segment || segment === "." || segment === ".."))
+    throw new CloudflareError(400, "Worker Builds root directory is invalid");
+  return ["wrangler.jsonc", "wrangler.json"].map(file =>
+    [...segments, file].map(encodeURIComponent).join("/"));
+}
+
 export function verifyPreviewConfig(source: string, workerName: string) {
   let config: WranglerConfig;
   try { config = JSON5.parse(source) as WranglerConfig; }
