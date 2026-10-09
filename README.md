@@ -14,7 +14,7 @@ GitHub sign-in creates a personal account in D1. Users can create team workspace
 
 ## Cloudflare Workers build
 
-From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local`; it applies the eleven D1 migrations when needed. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. The connected Cloudflare account has the `fava-core` D1 database with all eleven migrations applied. `npm run deploy:vinext` still needs the GitHub/session secrets and the R2 artifact bucket. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
+From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local`; it applies the eleven D1 migrations when needed. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. The connected Cloudflare account has the `fava-core` D1 database with all eleven migrations applied and the private `fava-run-artifacts` R2 bucket. `npm run deploy:vinext` still needs the GitHub/session secrets. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
 
 ### Connected Worker Previews
 
