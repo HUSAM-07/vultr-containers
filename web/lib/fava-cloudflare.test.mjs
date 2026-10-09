@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths } from "./fava-cloudflare.ts";
+import { CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths } from "./fava-cloudflare.ts";
+
+test("selects the production trigger for the linked GitHub repository", () => {
+  const triggers = [
+    { trigger_uuid: "wrong", branch_includes: ["main"], repo_connection_uuid: "other",
+      repo_connection: { provider_type: "github", repo_id: "12" } },
+    { trigger_uuid: "right", branch_includes: ["main"], repo_connection_uuid: "linked",
+      repo_connection: { provider_type: "github", repo_id: "34" } },
+  ];
+  assert.equal(productionTrigger(triggers, "main", 34)?.trigger_uuid, "right");
+  assert.equal(productionTrigger(triggers, "main", 56), undefined);
+  assert.equal(productionTrigger(triggers.map(({ repo_connection, ...trigger }) => trigger),
+    "main", 34, "linked")?.trigger_uuid, "right");
+});
 
 test("Wrangler config lookup follows the Worker Builds root directory", () => {
   assert.deepEqual(wranglerConfigPaths("/"), ["wrangler.jsonc", "wrangler.json"]);

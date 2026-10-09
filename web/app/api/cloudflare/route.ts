@@ -4,12 +4,9 @@ import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
-import { cloudflare, CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type PreviewBuild } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type BuildTrigger, type PreviewBuild } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
-type Trigger = { trigger_uuid: string; repo_connection_uuid?: string; build_token_uuid?: string;
-  build_command?: string; deploy_command?: string; root_directory?: string;
-  branch_includes?: string[]; branch_excludes?: string[]; path_includes?: string[]; path_excludes?: string[] };
 type Connection = { cloudflare_account_id: string; token_ciphertext: string };
 
 function errorResponse(error: unknown) {
@@ -116,28 +113,28 @@ export async function POST(request: NextRequest) {
     const { token, workers } = await workersFor(connection);
     const worker = workers.find(item => item.id === body.workerName);
     if (!worker?.tag) throw new CloudflareError(400, "Select a Worker in the connected Cloudflare account");
-    const triggers = await cloudflare<Trigger[]>(token,
+    const triggers = await cloudflare<BuildTrigger[]>(token,
       `/accounts/${connection.cloudflare_account_id}/builds/workers/${worker.tag}/triggers`);
-    const production = triggers.find(item => item.branch_includes?.includes(project.defaultBranch) &&
-      !item.branch_excludes?.includes(project.defaultBranch));
-    if (!production?.repo_connection_uuid || !production.build_token_uuid)
-      throw new CloudflareError(400, "Connect this Worker to the repository with Workers Builds first");
-    verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch,
-      production.root_directory || "/"), worker.id);
     const [owner, name] = body.repo.split("/");
     const repository = await github<{ id: number; owner: { id: number; login: string } }>(auth.session.token,
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
     if (repository.id !== project.githubRepoId) throw new CloudflareError(403, "Repository identity changed; relink it to Fava");
-    const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
-      `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
-        provider_type: "github", provider_account_id: String(repository.owner.id),
-        provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name });
-    if (repoConnection.repo_connection_uuid !== production.repo_connection_uuid)
-      throw new CloudflareError(400, "This Worker builds from a different GitHub repository");
+    let production = productionTrigger(triggers, project.defaultBranch, repository.id);
+    if (!production) {
+      const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
+          provider_type: "github", provider_account_id: String(repository.owner.id),
+          provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name });
+      production = productionTrigger(triggers, project.defaultBranch, repository.id,
+        repoConnection.repo_connection_uuid);
+    }
+    if (!production?.repo_connection_uuid || !production.build_token_uuid)
+      throw new CloudflareError(400, "Connect this Worker to the repository with Workers Builds first");
+    verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch,
+      production.root_directory || "/"), worker.id);
     const existing = triggers.find(item => item.branch_includes?.includes("*") &&
-      item.branch_excludes?.includes(project.defaultBranch));
-    if (existing && existing.repo_connection_uuid !== production.repo_connection_uuid)
-      throw new CloudflareError(400, "This Worker's Preview trigger builds from a different repository");
+      item.branch_excludes?.includes(project.defaultBranch) &&
+      item.repo_connection_uuid === production.repo_connection_uuid);
     let triggerUuid = existing?.trigger_uuid;
     if (existing && existing.deploy_command !== "npx wrangler preview")
       throw new CloudflareError(400, "Switch this Worker's existing Preview build to Worker Previews in Cloudflare first; that migration cannot be reversed");

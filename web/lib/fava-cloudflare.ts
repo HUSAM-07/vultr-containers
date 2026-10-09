@@ -149,6 +149,19 @@ export type PreviewBuild = { build_uuid: string; created_on?: string; status?: s
   preview_url?: string; build_trigger_metadata?: { branch?: string; commit_hash?: string };
   trigger?: { trigger_uuid?: string } };
 
+export type BuildTrigger = { trigger_uuid: string; repo_connection_uuid?: string; build_token_uuid?: string;
+  repo_connection?: { provider_type?: string; repo_id?: string };
+  build_command?: string; deploy_command?: string; root_directory?: string;
+  branch_includes?: string[]; branch_excludes?: string[]; path_includes?: string[]; path_excludes?: string[] };
+
+export function productionTrigger(triggers: BuildTrigger[], branch: string, repoId: number,
+  connectionUuid?: string) {
+  return triggers.find(item => item.branch_includes?.includes(branch) &&
+    !item.branch_excludes?.includes(branch) && (connectionUuid
+      ? item.repo_connection_uuid === connectionUuid
+      : item.repo_connection?.provider_type === "github" && item.repo_connection.repo_id === String(repoId)));
+}
+
 export function recentPreviewBuilds(builds: PreviewBuild[], triggerUuid: string) {
   const branches = new Set<string>();
   return builds.filter(build => build.trigger?.trigger_uuid === triggerUuid && build.build_trigger_metadata?.branch)
