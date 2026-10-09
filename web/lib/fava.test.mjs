@@ -11,10 +11,29 @@ import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
+import { runEvents } from "./fava-run-events.ts";
 import { createSession, readSession, revokeSession, seal, setSession, unseal } from "./fava-session.ts";
 import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
+
+test("agent traces show completed Codex commands and Claude tools without inventing test results", () => {
+  const codex = [
+    { type: "item.started", item: { id: "one", type: "command_execution", command: "npm test" } },
+    { type: "item.completed", item: { id: "one", type: "command_execution", command: "npm test", exit_code: 0 } },
+    { type: "item.completed", item: { id: "two", type: "command_execution", command: "npm run lint", exit_code: 1 } },
+  ].map(JSON.stringify).join("\n");
+  assert.deepEqual(runEvents(codex), [
+    { id: "one", label: "npm test", status: "passed" },
+    { id: "two", label: "npm run lint", status: "failed" },
+  ]);
+  const claude = [
+    { type: "assistant", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test" } }] } },
+    { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "tests failed", is_error: true }] } },
+  ].map(JSON.stringify).join("\n");
+  assert.deepEqual(runEvents(`partial line\n${claude}\n{"type":"assistant"`),
+    [{ id: "tool-1", label: "Bash", status: "failed" }]);
+});
 
 function testDb() {
   const sqlite = new DatabaseSync(":memory:");
