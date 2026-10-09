@@ -26,4 +26,10 @@ jobs:
       - run: npm run typecheck --prefix web
       - run: npm run typecheck --prefix runner
       - run: npm run build:vinext --prefix web -- --logLevel=error
-      - run: npm run build:dry --prefix runner
+      - run: |
+          # Docker Hub can time out while resolving Cloudflare's sandbox-shim image.
+          for attempt in 1 2 3; do
+            npm run build:dry --prefix runner && exit 0
+            sleep 15
+          done
+          exit 1
