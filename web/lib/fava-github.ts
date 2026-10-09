@@ -102,9 +102,10 @@ export async function listSpecPullRequests(token: string, name: string) {
   const candidates = pulls.filter(pull => pull.head.ref.startsWith("spec/") &&
     pull.base.ref === metadata.default_branch).slice(0, 10);
   const proposals = await Promise.all(candidates.map(async pull => {
-    const files = await github<{ filename: string }[]>(token,
+    const files = await github<{ filename: string; status: string }[]>(token,
       `/repos/${repo}/pulls/${pull.number}/files?per_page=100`);
-    if (files.length !== 1 || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(files[0].filename)) return null;
+    if (files.length !== 1 || files[0].status !== "added" ||
+      !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(files[0].filename)) return null;
     return { number: pull.number, title: pull.title, url: pull.html_url, path: files[0].filename,
       status: pull.merged_at && pull.merge_commit_sha ? "merged" : pull.state === "open" ? "open" : "closed",
       mergedCommitSha: pull.merged_at ? pull.merge_commit_sha : null };

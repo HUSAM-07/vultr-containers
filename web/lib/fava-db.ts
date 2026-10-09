@@ -3,6 +3,7 @@ import type { env } from "./runtime-env.ts";
 
 type User = { id: number; login: string; avatarUrl: string };
 type Db = typeof env.DB;
+type PublishedSpec = { number: number; path: string; branch: string };
 
 export async function ensurePersonalAccount(db: Db, user: User) {
   const accountId = `github:${user.id}`;
@@ -31,4 +32,11 @@ export async function listProjects(db: Db, accountId: string) {
   const result = await db.prepare("SELECT id, full_name AS repository, default_branch AS defaultBranch FROM projects WHERE account_id = ? ORDER BY created_at DESC")
     .bind(accountId).all<{ id: string; repository: string; defaultBranch: string }>();
   return result.results;
+}
+
+export async function recordSpec(db: Db, projectId: string, userId: number, spec: PublishedSpec) {
+  const id = crypto.randomUUID();
+  await db.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)")
+    .bind(id, projectId, spec.path, spec.branch, spec.number, userId, Date.now()).run();
+  return id;
 }

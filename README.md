@@ -6,15 +6,15 @@ The landing page is `/`, the spec workspace is `/app`, and the existing Forge ag
 
 ## GitHub App setup
 
-1. Register a GitHub App with callback URL `http://127.0.0.1:3001/api/github/auth/callback` for the local Worker preview. Give it repository **Metadata: read**, **Contents: read/write**, and **Pull requests: read/write**. Enable expiring user access tokens. Install it only on repositories you want Fava to access.
-2. Copy `web/.env.example` to `web/.dev.vars`. Set `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, and `GITHUB_APP_SLUG` from the App settings. Generate a random `FAVA_SESSION_SECRET` of at least 32 characters. Keep all four values out of Git.
+1. Register a GitHub App with callback URL `http://127.0.0.1:3001/api/github/auth/callback` for the local Worker preview. Give it repository **Metadata: read**, **Contents: read/write**, and **Pull requests: read/write**. Enable expiring user access tokens. Install it only on repositories you want Fava to access. For a deployed Worker, set the App webhook URL to `https://<your-worker-domain>/api/github/webhook`, configure a webhook secret, and subscribe to `pull_request` events.
+2. Copy `web/.env.example` to `web/.dev.vars`. Set `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, the downloaded App `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET`. Generate a random `FAVA_SESSION_SECRET` of at least 32 characters. Keep these values out of Git.
 3. Build and start the Cloudflare Worker preview as below, apply the local D1 schema, then open `http://127.0.0.1:3001/app`. Connect GitHub, choose an installed repository, and create a spec PR. The repository needs a nonempty default branch.
 
-GitHub sign-in creates a personal account in D1, and choosing a repository links it as a project. The session still uses an encrypted, HTTP-only cookie. Organization roles, server-side session revocation, and agent runs remain pending.
+GitHub sign-in creates a personal account in D1, and choosing a repository links it as a project. A spec PR is tracked in D1. A signed webhook records its merge only when the PR adds exactly that spec file and the merged contents still pass validation. The session still uses an encrypted, HTTP-only cookie. Organization roles, server-side session revocation, and agent runs remain pending.
 
 ## Cloudflare Workers build
 
-From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local` once. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. `npm run deploy:vinext` still needs a signed-in Cloudflare account, a provisioned D1 database with the schema applied, and the four GitHub/session secrets. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
+From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local` once. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. `npm run deploy:vinext` still needs a signed-in Cloudflare account, a provisioned D1 database with the schema applied, and the GitHub/session secrets. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.
 
 ## Forge — Vultr Agent Rush demo
 

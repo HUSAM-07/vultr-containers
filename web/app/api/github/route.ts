@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
-import { ensurePersonalAccount, linkProject, listProjects } from "@/lib/fava-db";
+import { ensurePersonalAccount, linkProject, listProjects, recordSpec } from "@/lib/fava-db";
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { clearSession, readSession, setSession } from "@/lib/fava-session";
@@ -71,9 +71,11 @@ export async function POST(request: NextRequest) {
     if (typeof repo !== "string" || typeof title !== "string" || typeof content !== "string")
       return NextResponse.json({ error: "Invalid specification" }, { status: 400 });
     const linked = await env.DB.prepare("SELECT id FROM projects WHERE account_id = ? AND full_name = ?")
-      .bind(`github:${auth.session.user.id}`, parseRepo(repo)).first();
+      .bind(`github:${auth.session.user.id}`, parseRepo(repo)).first<{ id: string }>();
     if (!linked) throw new GitHubError(403, "Link this repository to your Fava account first");
     const result = await publishSpec(auth.session.token, repo, title, content);
+    try { await recordSpec(env.DB, linked.id, auth.session.user.id, result); }
+    catch { throw new GitHubError(502, `Spec PR ${result.url} was created, but Fava could not track it. Contact the project owner before merging.`); }
     const response = NextResponse.json(result, { status: 201 });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;

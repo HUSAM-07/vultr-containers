@@ -11,7 +11,7 @@ The editable diagram is [fava-platform.drawio](fava-platform.drawio). Open it in
 5. An isolated agent workspace checks out that exact commit. The agent receives the spec, selected project/shared skills, bounded repository context, chosen model, and approved MCP connections. It opens an implementation PR with test evidence and a preview URL.
 6. A spec conformance check compares changed files and behavior against acceptance criteria. Unrelated changes are flagged or removed before the implementation PR is marked ready.
 
-The current implementation covers steps 1–3 locally once a GitHub App is configured, including personal account creation and repository project links in D1. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
+The current implementation covers steps 1–3 locally once a GitHub App is configured, including personal account creation, repository project links, and spec PR records in D1. A signed `pull_request.closed` webhook verifies the App installation, PR files, and spec content at the merge commit before marking a tracked spec merged. The workspace also lists recent spec-only pull requests and their GitHub status; no agent starts from that list yet. The web app builds and serves locally as a Cloudflare Worker with vinext. The existing Forge demo is available at `/demo`; it is not connected to the merged-spec gate.
 
 ## Boundaries and Cloudflare services
 
@@ -35,11 +35,11 @@ The initial D1 schema is in [`infra/cloudflare/0001_core.sql`](../infra/cloudfla
 
 ## Identity and GitHub integration
 
-- GitHub App permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. Subscribe to `pull_request`, `installation`, `installation_repositories`, and `github_app_authorization` webhooks when the webhook worker exists.
+- GitHub App permissions: **Metadata: read**, **Contents: read/write**, **Pull requests: read/write**. Subscribe to `pull_request` events for the current webhook; installation and authorization revocation handlers are still required.
 - OAuth uses state and PKCE. The current session is an AES-GCM encrypted, HTTP-only, SameSite=Lax cookie with token refresh. A production multi-tenant service will store sessions and encrypted provider credentials server-side in D1/R2 with a dedicated key-management policy; the cookie will then contain an opaque session ID.
 - Fava account identity is the immutable GitHub user ID. Organization and project roles will be owner, admin, editor, viewer. Every API call must enforce Fava role **and** current GitHub installation/repository permission. Installation changes and revoked authorizations invalidate access.
 - GitHub API writes use the person's GitHub App user token, so the audit trail attributes the action to that person. Webhook-triggered work uses an installation token restricted to the single repository.
-- A spec PR contains only `specs/<slug>.md`. Branch protection and CI should require human approval before merge. The webhook checks that the merged PR changed a spec path and records its merge commit; duplicate deliveries must be harmless.
+- A spec PR contains only `specs/<slug>-<id>.md`. Branch protection and CI should require human approval before merge. The webhook checks the exact file and merged contents, records the merge commit, and treats duplicate deliveries idempotently. Dispatching an implementation run after that record remains to be built.
 
 ## Agent harness and source-of-truth checks
 
