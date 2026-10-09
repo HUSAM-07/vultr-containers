@@ -7,7 +7,7 @@ import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec 
 import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
-import { seal, unseal } from "./fava-session.ts";
+import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
 import { appJwt, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
@@ -23,7 +23,7 @@ function testDb() {
     prepare(sql) {
       let values = [];
       return { bind(...params) { values = params; return this; },
-        async run() { sqlite.prepare(sql).run(...values); },
+        async run() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; },
         async first() { const row = sqlite.prepare(sql).get(...values); return row ? { ...row } : null; },
         async all() { return { results: sqlite.prepare(sql).all(...values).map(row => ({ ...row })) }; },
         execute() { sqlite.prepare(sql).run(...values); } };
@@ -246,10 +246,28 @@ test("spec pipeline includes only single-file proposals to the default branch", 
 
 test("session cookie is encrypted and rejects tampering", async () => {
   process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
-  const session = { token: "sensitive-token", expiresAt: Date.now() + 1000,
+  const session = { id: crypto.randomUUID(), token: "sensitive-token", expiresAt: Date.now() + 1000,
     user: { id: 1, login: "test", avatarUrl: "" } };
   const cookie = await seal(session);
   assert.equal(cookie.includes(session.token), false);
   assert.deepEqual(await unseal(cookie), session);
   assert.equal(await unseal((cookie.startsWith("A") ? "B" : "A") + cookie.slice(1)), null);
+});
+
+test("logout revokes a session in D1 even if its encrypted cookie is reused", async () => {
+  process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
+  const { db, sqlite } = testDb();
+  try {
+    await ensurePersonalAccount(db, { id: 1, login: "test", avatarUrl: "" });
+    const session = { id: crypto.randomUUID(), token: "sensitive-token",
+      expiresAt: Date.now() + 600_000, refreshExpiresAt: Date.now() + 86_400_000,
+      user: { id: 1, login: "test", avatarUrl: "" } };
+    await createSession(db, session);
+    const cookie = await seal(session);
+    const reused = { cookies: { get: () => ({ value: cookie }) } };
+    assert.equal((await readSession(reused, db)).session.user.id, 1);
+    await revokeSession(db, reused);
+    assert.equal(await readSession(reused, db), null);
+    assert.equal(sqlite.prepare("SELECT id_hash FROM sessions").get().id_hash.includes(session.id), false);
+  } finally { sqlite.close(); }
 });

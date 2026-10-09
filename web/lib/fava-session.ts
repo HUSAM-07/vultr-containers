@@ -1,6 +1,8 @@
 import type { NextRequest, NextResponse } from "next/server";
+import type { env } from "./runtime-env.ts";
 
 export type FavaSession = {
+  id: string;
   token: string;
   expiresAt: number;
   refreshToken?: string;
@@ -10,6 +12,27 @@ export type FavaSession = {
 
 const cookieName = "fava_session";
 const encoder = new TextEncoder();
+type Db = typeof env.DB;
+
+async function idHash(id: string) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(id))),
+    byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function deadline(session: FavaSession) {
+  return Math.min(session.refreshExpiresAt || session.expiresAt, Date.now() + 30 * 24 * 60 * 60 * 1000);
+}
+
+export async function createSession(db: Db, session: FavaSession) {
+  await db.prepare("INSERT INTO sessions (id_hash, github_id, expires_at) VALUES (?, ?, ?)")
+    .bind(await idHash(session.id), session.user.id, deadline(session)).run();
+}
+
+export async function revokeSession(db: Db, request: NextRequest) {
+  const session = await unseal(request.cookies.get(cookieName)?.value);
+  if (session) await db.prepare("UPDATE sessions SET revoked_at = ? WHERE id_hash = ? AND github_id = ?")
+    .bind(Date.now(), await idHash(session.id), session.user.id).run();
+}
 
 function secret() {
   const value = process.env.FAVA_SESSION_SECRET;
@@ -43,14 +66,19 @@ export async function unseal(value?: string): Promise<FavaSession | null> {
     if (!iv || !encrypted) return null;
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes(iv) }, await key(), bytes(encrypted));
     const session = JSON.parse(new TextDecoder().decode(plain)) as FavaSession;
-    return typeof session.token === "string" && Number.isFinite(session.expiresAt) &&
+    return typeof session.id === "string" && /^[a-f0-9-]{36}$/i.test(session.id) &&
+      typeof session.token === "string" && Number.isFinite(session.expiresAt) &&
       typeof session.user?.id === "number" ? session : null;
   } catch { return null; }
 }
 
-export async function readSession(request: NextRequest) {
+export async function readSession(request: NextRequest, db: Db) {
   const session = await unseal(request.cookies.get(cookieName)?.value);
   if (!session) return null;
+  const hash = await idHash(session.id);
+  const active = await db.prepare("SELECT 1 AS active FROM sessions WHERE id_hash = ? AND github_id = ? AND revoked_at IS NULL AND expires_at > ?")
+    .bind(hash, session.user.id, Date.now()).first();
+  if (!active) return null;
   if (session.expiresAt > Date.now() + 60_000) return { session, refreshed: false };
   if (!session.refreshToken || !session.refreshExpiresAt || session.refreshExpiresAt <= Date.now()) return null;
   const clientId = process.env.GITHUB_APP_CLIENT_ID;
@@ -65,10 +93,12 @@ export async function readSession(request: NextRequest) {
   if (!response.ok) return null;
   const value = await response.json();
   if (typeof value.access_token !== "string" || typeof value.expires_in !== "number") return null;
-  return { session: { ...session, token: value.access_token, expiresAt: Date.now() + value.expires_in * 1000,
+  const renewed = { ...session, token: value.access_token, expiresAt: Date.now() + value.expires_in * 1000,
     refreshToken: value.refresh_token || session.refreshToken,
-    refreshExpiresAt: value.refresh_token_expires_in ? Date.now() + value.refresh_token_expires_in * 1000 : session.refreshExpiresAt },
-    refreshed: true };
+    refreshExpiresAt: value.refresh_token_expires_in ? Date.now() + value.refresh_token_expires_in * 1000 : session.refreshExpiresAt };
+  const updated = await db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = ? AND revoked_at IS NULL")
+    .bind(deadline(renewed), hash).run();
+  return updated.meta.changes === 1 ? { session: renewed, refreshed: true } : null;
 }
 
 export async function setSession(response: NextResponse, request: NextRequest, session: FavaSession) {

@@ -4,7 +4,7 @@ import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec 
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
-import { clearSession, readSession, setSession } from "@/lib/fava-session";
+import { clearSession, readSession, revokeSession, setSession } from "@/lib/fava-session";
 
 function fail(error: unknown) {
   const status = error instanceof GitHubError && error.status >= 400 && error.status < 500 ? error.status : 502;
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     process.env.FAVA_SESSION_SECRET && process.env.FAVA_SESSION_SECRET.length >= 32);
   if (action === "session" && !configured) return NextResponse.json({ configured: false, connected: false });
   try {
-    const auth = await readSession(request);
+    const auth = await readSession(request, env.DB);
     if (action === "session") {
       const response = NextResponse.json({ configured, connected: Boolean(auth), user: auth?.session.user || null,
         installUrl: process.env.GITHUB_APP_SLUG ? `https://github.com/apps/${process.env.GITHUB_APP_SLUG}/installations/new` : null });
@@ -44,13 +44,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
   const action = request.nextUrl.searchParams.get("action");
   if (action === "logout") {
+    try { if (env.DB) await revokeSession(env.DB, request); }
+    catch { return NextResponse.json({ error: "Could not revoke this session" }, { status: 503 }); }
     const response = NextResponse.json({ ok: true });
     clearSession(response);
     return response;
   }
   if (action !== "spec" && action !== "project") return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
-    const auth = await readSession(request);
+    const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     if (action === "project") {
       const body = await readJson(request, 1_000);

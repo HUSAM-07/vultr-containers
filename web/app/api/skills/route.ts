@@ -18,7 +18,7 @@ function fail(error: unknown) {
 
 export async function GET(request: NextRequest) {
   try {
-    const auth = await readSession(request);
+    const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repository = request.nextUrl.searchParams.get("repo") || "";
     const project = await projectFor(auth.session.user.id, repository);
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
   if (request.headers.get("origin") !== request.nextUrl.origin)
     return NextResponse.json({ error: "Invalid origin" }, { status: 403 });
   try {
-    const auth = await readSession(request);
+    const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const body = await readJson(request, 2_000);
     if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string" ||

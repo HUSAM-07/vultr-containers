@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { github } from "@/lib/fava-github";
 import { ensurePersonalAccount } from "@/lib/fava-db";
-import { setSession } from "@/lib/fava-session";
+import { createSession, setSession } from "@/lib/fava-session";
 
 export async function GET(request: NextRequest) {
   const [state, verifier] = (request.cookies.get("fava_oauth")?.value || "").split(".");
@@ -27,11 +27,13 @@ export async function GET(request: NextRequest) {
     const user = await github<{ id: number; login: string; avatar_url: string }>(token.access_token, "/user");
     await ensurePersonalAccount(env.DB, { id: user.id, login: user.login, avatarUrl: user.avatar_url });
     const response = NextResponse.redirect(new URL("/app", request.nextUrl.origin));
-    await setSession(response, request, { token: token.access_token,
+    const session = { id: crypto.randomUUID(), token: token.access_token,
       expiresAt: Date.now() + token.expires_in * 1000,
       refreshToken: token.refresh_token,
       refreshExpiresAt: token.refresh_token_expires_in ? Date.now() + token.refresh_token_expires_in * 1000 : undefined,
-      user: { id: user.id, login: user.login, avatarUrl: user.avatar_url } });
+      user: { id: user.id, login: user.login, avatarUrl: user.avatar_url } };
+    await createSession(env.DB, session);
+    await setSession(response, request, session);
     response.cookies.set("fava_oauth", "", { httpOnly: true, sameSite: "lax", path: "/api/github/auth", maxAge: 0 });
     return response;
   } catch {

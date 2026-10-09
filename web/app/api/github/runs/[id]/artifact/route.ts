@@ -11,7 +11,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!env.DB || !env.ARTIFACTS)
     return NextResponse.json({ error: "Run artifacts are not configured" }, { status: 503 });
-  const auth = await readSession(request);
+  const auth = await readSession(request, env.DB);
   if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
   const run = await env.DB.prepare("SELECT runs.artifact_key AS artifactKey FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.id = ? AND projects.account_id = ?")
     .bind(id, `github:${auth.session.user.id}`).first<{ artifactKey: string | null }>();
