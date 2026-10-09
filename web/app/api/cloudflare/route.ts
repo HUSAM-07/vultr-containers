@@ -125,13 +125,16 @@ export async function POST(request: NextRequest) {
       ("rootDirectory" in body && typeof body.rootDirectory === "string" ? body.rootDirectory : "/");
     const source = await wranglerSource(auth.session.token, body.repo, project.defaultBranch, rootDirectory);
     verifyPreviewConfig(source, worker.id);
-    const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
+    const knownConnection = triggers.find(item => item.repo_connection?.provider_type === "github" &&
+      item.repo_connection.repo_id === String(repository.id) && item.repo_connection_uuid)?.repo_connection_uuid;
+    const repoConnectionUuid = knownConnection || (await cloudflare<{ repo_connection_uuid: string }>(token,
       `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
         provider_type: "github", provider_account_id: String(repository.owner.id),
-        provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name });
-    verifyWorkerRepository(triggers, repoConnection.repo_connection_uuid);
-    let production = productionTrigger(triggers, project.defaultBranch, repository.id,
-      repoConnection.repo_connection_uuid);
+        provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name })).repo_connection_uuid;
+    if (!repoConnectionUuid) throw new CloudflareError(502, "Cloudflare did not return a repository connection ID");
+    verifyWorkerRepository(triggers, repoConnectionUuid, repository.id);
+    let production = productionTrigger(triggers, project.defaultBranch, repository.id) ||
+      productionTrigger(triggers, project.defaultBranch, repository.id, repoConnectionUuid);
     if (!production) {
       const buildTokenId = "buildTokenId" in body && typeof body.buildTokenId === "string" ? body.buildTokenId : "";
       const buildCommand = "buildCommand" in body && typeof body.buildCommand === "string" ? body.buildCommand : "";
@@ -143,7 +146,7 @@ export async function POST(request: NextRequest) {
         throw new CloudflareError(400, "Select an existing Cloudflare Builds deployment token");
       production = await cloudflare<BuildTrigger>(token,
         `/accounts/${connection.cloudflare_account_id}/builds/triggers`, "POST", {
-          external_script_id: worker.tag, repo_connection_uuid: repoConnection.repo_connection_uuid,
+          external_script_id: worker.tag, repo_connection_uuid: repoConnectionUuid,
           build_token_uuid: buildTokenId, trigger_name: "Fava production",
           build_command: buildCommand, deploy_command: "npx wrangler deploy", root_directory: rootDirectory,
           branch_includes: [project.defaultBranch], branch_excludes: [],

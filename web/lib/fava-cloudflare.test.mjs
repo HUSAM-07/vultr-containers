@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import { CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths } from "./fava-cloudflare.ts";
 
 test("does not attach a Worker already built from another repository", () => {
-  assert.doesNotThrow(() => verifyWorkerRepository([], "repo-1"));
-  assert.doesNotThrow(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-1" }], "repo-1"));
-  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-2" }], "repo-1"), CloudflareError);
-  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "legacy" }], "repo-1"), CloudflareError);
+  assert.doesNotThrow(() => verifyWorkerRepository([], "repo-1", 42));
+  assert.doesNotThrow(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-1" }], "repo-1", 42));
+  assert.doesNotThrow(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "old",
+    repo_connection: { provider_type: "github", repo_id: "42" } }], "repo-1", 42));
+  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-2" }], "repo-1", 42), CloudflareError);
+  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-1",
+    repo_connection: { provider_type: "github", repo_id: "43" } }], "repo-1", 42), CloudflareError);
+  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "legacy" }], "repo-1", 42), CloudflareError);
 });
 
 test("selects the production trigger for the linked GitHub repository", () => {
