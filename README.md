@@ -45,7 +45,7 @@ Requires Node 24+ and Docker for executing agent code. The containment demo does
 5. In another terminal: `cd web && npm install && npm run dev`.
 6. Open `http://localhost:3000/demo`.
 
-`npm test` checks plan validation, Docker isolation flags, inference routes, visitor session isolation, preview extraction, spec validation and publishing, and encrypted sessions. `npm run build` builds the Next.js frontend. The Forge conversation and repository names are visual examples until a real task is selected.
+`npm test` checks plan validation, Docker isolation flags, inference routes, visitor session isolation, preview extraction, spec validation and publishing, and encrypted sessions. `npm run build` builds the Next.js frontend. Forge starts with an empty run history; its demo project groups live in browser storage and do not link to GitHub repositories. Use `/app` for connected projects.
 
 ## Deploy
 
