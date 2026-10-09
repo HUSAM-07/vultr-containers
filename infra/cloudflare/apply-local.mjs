@@ -154,3 +154,15 @@ if (oauthColumns.every(name => cloudflareColumns.includes(name))) {
   if (!oauthColumns.every(name => installed.includes(name))) throw Error("Local Cloudflare OAuth migration verification failed");
   console.log("Local Cloudflare OAuth migration applied");
 }
+
+const localDevices = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('local_devices', 'local_device_events')")).rows.map(row => row[0]);
+if (localDevices.length === 2) {
+  console.log("Local device migration is already applied");
+} else if (localDevices.length) {
+  throw Error("Local D1 has a partial device migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0013_local_devices.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('local_devices', 'local_device_events')")).rows;
+  if (installed.length !== 2) throw Error("Local device migration verification failed");
+  console.log("Local device migration applied");
+}

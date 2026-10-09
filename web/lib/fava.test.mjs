@@ -8,6 +8,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
+import { changeDevice, deviceTokenHash, listDevices, pairDevice } from "./fava-devices.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -64,6 +65,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0010_run_publication_fence.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0011_server_sessions.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0012_cloudflare_oauth.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0013_local_devices.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -71,11 +73,15 @@ function testDb() {
         async run() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; },
         async first() { const row = sqlite.prepare(sql).get(...values); return row ? { ...row } : null; },
         async all() { return { results: sqlite.prepare(sql).all(...values).map(row => ({ ...row })) }; },
-        execute() { sqlite.prepare(sql).run(...values); } };
+        execute() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; } };
     },
     async batch(statements) {
       sqlite.exec("BEGIN");
-      try { for (const statement of statements) statement.execute(); sqlite.exec("COMMIT"); }
+      try {
+        const results = statements.map(statement => statement.execute());
+        sqlite.exec("COMMIT");
+        return results;
+      }
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   };
@@ -102,6 +108,29 @@ test("run cancellation is project-scoped and stops at the publication fence", as
     assert.equal((await listRuns(db, "a", "owner/repo"))[0].publishingAt, 1);
     await assert.rejects(cancelRun(db, "p", id), /started publishing/);
     assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(id).status, "running");
+  } finally { sqlite.close(); }
+});
+
+test("local device credentials are project-scoped, hashed, rotated, revoked, and audited", async () => {
+  const { sqlite, db } = testDb();
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    const paired = await pairDevice(db, "p", 1, " My laptop ");
+    const saved = sqlite.prepare("SELECT token_hash AS tokenHash FROM local_devices WHERE id = ?").get(paired.id);
+    assert.equal(saved.tokenHash, await deviceTokenHash(paired.token));
+    assert.equal(saved.tokenHash.includes(paired.token), false);
+    assert.equal((await listDevices(db, "p"))[0].label, "My laptop");
+    assert.equal(JSON.stringify(await listDevices(db, "p")).includes(paired.token), false);
+    await assert.rejects(changeDevice(db, "other-project", 1, paired.id, "rotate"), /not found/);
+    const rotated = await changeDevice(db, "p", 1, paired.id, "rotate");
+    assert.notEqual(rotated.token, paired.token);
+    assert.equal(sqlite.prepare("SELECT token_hash FROM local_devices WHERE id = ?").get(paired.id).token_hash,
+      await deviceTokenHash(rotated.token));
+    await changeDevice(db, "p", 1, paired.id, "revoke");
+    await assert.rejects(changeDevice(db, "p", 1, paired.id, "rotate"), /not found/);
+    assert.deepEqual(sqlite.prepare("SELECT action FROM local_device_events ORDER BY created_at, rowid").all().map(row => row.action),
+      ["paired", "rotated", "revoked"]);
+    await assert.rejects(deviceTokenHash("invalid"), /Invalid device credential/);
   } finally { sqlite.close(); }
 });
 

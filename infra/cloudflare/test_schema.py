@@ -18,6 +18,7 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0010_run_publication_fence.sql").read_text())
         db.executescript(Path(__file__).with_name("0011_server_sessions.sql").read_text())
         db.executescript(Path(__file__).with_name("0012_cloudflare_oauth.sql").read_text())
+        db.executescript(Path(__file__).with_name("0013_local_devices.sql").read_text())
         self.assertIn("payload_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(sessions)")])
         self.assertIn("refresh_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(cloudflare_connections)")])
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")
@@ -48,6 +49,9 @@ class SchemaTest(unittest.TestCase):
         db.execute("INSERT INTO run_mcp_grants VALUES ('r', 'grant')")
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("INSERT INTO run_mcp_grants VALUES ('r', 'grant')")
+        db.execute("INSERT INTO local_devices (id, project_id, label, token_hash, created_by, created_at, expires_at) VALUES ('device', 'p', 'Laptop', 'hash', 1, 1, 2)")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO local_devices (id, project_id, label, token_hash, created_by, created_at, expires_at) VALUES ('other', 'p', 'Laptop', 'hash', 1, 1, 2)")
 
 
 if __name__ == "__main__":

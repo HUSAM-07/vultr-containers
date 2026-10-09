@@ -20,7 +20,7 @@ This is a separate execution mode; the current Cloudflare Sandbox and AI Gateway
 
 ## Required implementation before showing a Connect subscription control
 
-- Device pairing with explicit account/project scope, credential rotation, revocation, and an audit trail.
+- The project-scoped device API now pairs a device, returns its credential once, and supports listing, rotation, revocation, and an audit trail. Only its SHA-256 hash is stored. The local companion and run authorization are still needed before this is a usable connection.
 - Atomic run claiming, lease renewal, recovery after disconnect, and cancellation that stops the local process.
 - A bounded artifact upload protocol that verifies the pinned commit and reviewed diff before publication.
 - End-to-end tests for two competing companions, revoked devices, expired leases, and a spec that has not merged.
