@@ -26,7 +26,7 @@ type Published = { url: string; number: number; branch: string; path: string };
 type SpecProposal = { number: number; title: string; url: string; path: string; status: "open" | "merged" | "closed"; mergedCommitSha: string | null };
 type AgentRun = { id: string; status: string; model: string; provider: string; mergedCommitSha: string;
   specPullNumber: number; specPath: string; pullNumber: number | null; previewUrl: string | null;
-  summary: string | null; error: string | null; artifactKey: string | null };
+  summary: string | null; error: string | null; artifactKey: string | null; publishingAt: number | null };
 
 const initialSpec = `## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test.\n`;
 
@@ -52,6 +52,8 @@ export default function WorkspacePage() {
   const [specs, setSpecs] = useState<SpecProposal[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cancellingRunId, setCancellingRunId] = useState("");
+  const [runError, setRunError] = useState("");
   const [error, setError] = useState("");
   const [restored, setRestored] = useState(false);
   const initialized = useRef(false);
@@ -59,7 +61,7 @@ export default function WorkspacePage() {
 
   const choose = useCallback(async (name: string, existing?: Project) => {
     const requestId = ++choiceId.current;
-    setRepo(name); setContext(null); setSpecs([]); setRuns([]); setPublished(null); setError(""); setBusy(true);
+    setRepo(name); setContext(null); setSpecs([]); setRuns([]); setPublished(null); setError(""); setRunError(""); setBusy(true);
     try {
       const linked = existing || await json<Project>("/api/github?action=project", { method: "POST",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: name, accountId: workspaceId }) });
@@ -126,7 +128,7 @@ export default function WorkspacePage() {
   function selectWorkspace(id: string) {
     choiceId.current += 1;
     setWorkspaceId(id); setRepo(""); setContext(null); setSpecs([]); setRuns([]);
-    setPublished(null); setBusy(false); setError("");
+    setPublished(null); setBusy(false); setError(""); setRunError("");
   }
 
   async function publish() {
@@ -144,6 +146,19 @@ export default function WorkspacePage() {
   async function logout() {
     try { await json("/api/github?action=logout", { method: "POST" }); window.location.reload(); }
     catch (cause) { setError((cause as Error).message); }
+  }
+
+  async function cancelImplementation(runId: string) {
+    const requestId = choiceId.current;
+    setCancellingRunId(runId); setRunError("");
+    try {
+      const result = await json<{ status: "cancelled"; error: string }>("/api/github?action=cancelRun", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo, runId }) });
+      if (requestId === choiceId.current)
+        setRuns(current => current.map(run => run.id === runId
+          ? { ...run, status: result.status, error: result.error } : run));
+    } catch (cause) { if (requestId === choiceId.current) setRunError((cause as Error).message); }
+    finally { setCancellingRunId(""); }
   }
 
   const selectedProject = projects.find(project => project.repository === repo);
@@ -184,13 +199,17 @@ export default function WorkspacePage() {
             <h3 className="text-body-medium">Implementation runs</h3>
             <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh implementation runs" onClick={() => json<AgentRun[]>(`/api/github?action=runs&repo=${encodeURIComponent(repo)}&refresh=1`).then(setRuns).catch(cause => setError((cause as Error).message))} />
           </div>
+          {runError && <p role="alert" className="mt-2 text-caption-1-regular text-text-error-primary">{runError}</p>}
           {runs.length ? <ul className="mt-3 space-y-2">{runs.map(run =>
             <li key={run.id} className="rounded-xl border border-border-button-default bg-background-primary-default p-3">
-              <p className="text-body-medium">Spec #{run.specPullNumber} · {run.status === "succeeded" ? run.pullNumber ? "Agent completed · draft PR" : "Agent completed · PR pending" : run.status}</p>
+              <p className="text-body-medium">Spec #{run.specPullNumber} · {run.status === "succeeded" ? run.pullNumber ? "Agent completed · draft PR" : "Agent completed · PR pending" : run.status === "running" && run.publishingAt ? "Publishing implementation PR" : run.status}</p>
               <p className="mt-1 text-caption-1-regular text-text-secondary">{run.model} · {run.mergedCommitSha.slice(0, 7)}</p>
               {run.pullNumber && <a href={`https://github.com/${repo}/pull/${run.pullNumber}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Implementation PR #{run.pullNumber} <RiExternalLinkLine className="size-4" aria-hidden /></a>}
               {run.summary && <p className="mt-2 text-body-regular text-text-secondary">{run.summary}</p>}
               {run.error && <p className="mt-2 text-body-regular text-text-error-primary">{run.error}</p>}
+              {selectedProject?.role !== "viewer" && (run.status === "queued" || run.status === "running" && !run.publishingAt) &&
+                <Button variant="ghost" size="xs" className="mt-2" disabled={Boolean(cancellingRunId)}
+                  onClick={() => void cancelImplementation(run.id)}>{cancellingRunId === run.id ? "Cancelling…" : "Cancel run"}</Button>}
               {run.artifactKey && (run.status === "succeeded" || run.error?.startsWith("Spec review rejected")) && <>
                 <a href={`/api/github/runs/${run.id}/artifact?kind=diff`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-body-medium text-accent-600 hover:underline">Code diff</a>
                 <RunReview id={run.id} />

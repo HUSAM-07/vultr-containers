@@ -121,3 +121,13 @@ if (implementationColumns.includes("implementation_sha")) {
   if (!installed.includes("implementation_sha")) throw Error("Local implementation-commit migration verification failed");
   console.log("Local implementation-commit migration applied");
 }
+
+const publicationColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+if (publicationColumns.includes("publishing_at")) {
+  console.log("Local run-publication migration is already applied");
+} else {
+  await query(await readFile(new URL("./0010_run_publication_fence.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  if (!installed.includes("publishing_at")) throw Error("Local run-publication migration verification failed");
+  console.log("Local run-publication migration applied");
+}

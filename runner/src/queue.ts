@@ -45,12 +45,13 @@ async function loadRunMcpGrants(env: Env, runId: string) {
 }
 
 export async function reconcile(env: Env) {
-  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND error = 'GitHub installation access removed' AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
+  // shortcut: cancellation stops the container on the next minute tick; use a queue for immediate stops.
+  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member') AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
     .all<{ id: string }>();
   for (const run of cancelled.results) {
     try {
       await env.SANDBOX.getByName(run.id).stop();
-      await env.DB.prepare("UPDATE runs SET error = 'GitHub installation access removed; agent stopped' WHERE id = ? AND status = 'cancelled' AND error = 'GitHub installation access removed'")
+      await env.DB.prepare("UPDATE runs SET error = error || '; agent stopped' WHERE id = ? AND status = 'cancelled' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member')")
         .bind(run.id).run();
     } catch (error) { console.error("Cancelled agent could not be stopped", run.id, error); }
   }
@@ -105,7 +106,11 @@ export async function reconcile(env: Env) {
         await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
         continue;
       }
-      const published = await publishImplementation(env, run, await sandbox.changes(), status.result, review);
+      const files = await sandbox.changes();
+      const publishing = await env.DB.prepare("UPDATE runs SET publishing_at = COALESCE(publishing_at, ?) WHERE id = ? AND status = 'running'")
+        .bind(Date.now(), id).run();
+      if (publishing.meta.changes !== 1) continue;
+      const published = await publishImplementation(env, run, files, status.result, review);
       await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, implementation_sha = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
         .bind(status.result.slice(0, 2000), prefix, published.branch, published.sha, published.pullNumber, Date.now(), id).run();
     } catch (error) {

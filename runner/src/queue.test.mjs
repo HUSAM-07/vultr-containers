@@ -10,7 +10,7 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql"])
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql", "0010_run_publication_fence.sql"])
     sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
   sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
   sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")
@@ -88,6 +88,7 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
     assert.equal(writes.get(`runs/${runId}/stderr.log`), "");
     assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, true);
+    assert.equal(sqlite.prepare("SELECT publishing_at FROM runs WHERE id = ?").get(runId).publishing_at > 0, true);
   } finally { globalThis.fetch = originalFetch; sqlite.close(); }
 });
 
@@ -234,4 +235,31 @@ test("cancelled installation runs stop their agent container", async () => {
     assert.equal(wasStopped(), true);
     assert.match(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /agent stopped/);
   } finally { sqlite.close(); }
+});
+
+test("member cancellation stops a running agent and prevents a late implementation PR", async () => {
+  const { sqlite, env, setTask, wasStopped } = fixture();
+  const original = globalThis.fetch;
+  let githubWrites = 0;
+  try {
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/compat/chat/completions")) {
+        sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'Cancellation requested by project member', completed_at = 2 WHERE id = ?")
+          .run(runId);
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"] }) } }] });
+      }
+      githubWrites++;
+      throw Error("Cancelled run must not reach GitHub");
+    };
+    await reconcile(env);
+    assert.equal(githubWrites, 0);
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, publishing_at FROM runs WHERE id = ?").get(runId) },
+      { status: "cancelled", publishing_at: null });
+    await reconcile(env);
+    assert.equal(wasStopped(), true);
+    assert.match(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /agent stopped/);
+  } finally { globalThis.fetch = original; sqlite.close(); }
 });

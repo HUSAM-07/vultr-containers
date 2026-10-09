@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
-import { accountAccess, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
+import { accountAccess, cancelRun, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
@@ -61,10 +61,22 @@ export async function POST(request: NextRequest) {
     clearSession(response);
     return response;
   }
-  if (action !== "spec" && action !== "project") return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (action !== "spec" && action !== "project" && action !== "cancelRun")
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
+    if (action === "cancelRun") {
+      const body = await readJson(request, 1_000);
+      if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string" ||
+        !("runId" in body) || typeof body.runId !== "string" || !/^[a-f0-9-]{36}$/i.test(body.runId))
+        throw new GitHubError(400, "Choose a valid run");
+      const project = await projectAccess(env.DB, auth.session.user.id, body.repo, auth.session.token, "editor");
+      const reason = await cancelRun(env.DB, project.id, body.runId);
+      const response = NextResponse.json({ status: "cancelled", error: reason });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
     if (action === "project") {
       const body = await readJson(request, 1_000);
       if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string")

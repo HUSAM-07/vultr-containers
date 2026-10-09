@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
-import { accountAccess, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
+import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { encryptToken } from "./fava-cloudflare.ts";
@@ -27,6 +27,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0007_unique_project_repository.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0008_run_mcp_grants.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0009_implementation_sha.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0010_run_publication_fence.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -44,6 +45,29 @@ function testDb() {
   };
   return { sqlite, db };
 }
+
+test("run cancellation is project-scoped and stops at the publication fence", async () => {
+  const { sqlite, db } = testDb();
+  const id = "11111111-1111-4111-8111-111111111111";
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    sqlite.exec("INSERT INTO specs (id, project_id, path, branch, pull_number, status, created_by, created_at) VALUES ('s', 'p', 'specs/a.md', 'spec/a', 4, 'merged', 1, 1)");
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1)")
+      .run(id, "a".repeat(40));
+    await assert.rejects(cancelRun(db, "another-project", id), /Run not found/);
+    assert.equal(await cancelRun(db, "p", id), "Cancellation requested by project member");
+    assert.equal(await cancelRun(db, "p", id), "Cancellation requested by project member");
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, error FROM runs WHERE id = ?").get(id) },
+      { status: "cancelled", error: "Cancellation requested by project member" });
+    sqlite.prepare("UPDATE runs SET status = 'running', error = NULL, started_at = 2 WHERE id = ?").run(id);
+    assert.equal(await cancelRun(db, "p", id), "Cancellation requested by project member");
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(id).status, "cancelled");
+    sqlite.prepare("UPDATE runs SET status = 'running', error = NULL, publishing_at = 1 WHERE id = ?").run(id);
+    assert.equal((await listRuns(db, "a", "owner/repo"))[0].publishingAt, 1);
+    await assert.rejects(cancelRun(db, "p", id), /started publishing/);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(id).status, "running");
+  } finally { sqlite.close(); }
+});
 
 test("spec validation rejects template guidance", () => {
   assert.throws(() => chooseModel("arbitrary-model"), /supported agent model/);
