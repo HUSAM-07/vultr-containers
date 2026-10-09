@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { dispatch, reconcile } from "./queue.ts";
 
 const runId = "11111111-1111-4111-8111-111111111111";
@@ -21,11 +21,17 @@ function fixture() {
   const starts = [];
   let task = { state: "running" };
   let stopped = false;
+  let snapshotChanged = false;
+  const diff = "diff --git a/a b/a\n+new code\n";
   const sandbox = { async start(job) { starts.push(job); return "started"; },
     async status() { return task; }, async logs() { return { stdout: "agent events", stderr: "" }; },
-    async diff() { return "diff --git a/a b/a\n+new code\n"; },
+    async diff() { return diff; },
     async spec() { return "## Outcome\n\nBuild requested change.\n\n## Acceptance criteria\n\n- Add new code."; },
-    async changes() { return [{ path: "a", mode: "100644", content: "bmV3IGNvZGU=" }]; },
+    async changes(hash) {
+      assert.equal(hash, createHash("sha256").update(diff).digest("hex"));
+      if (snapshotChanged) throw Error("Staged changes differ from reviewed diff");
+      return [{ path: "a", mode: "100644", content: "bmV3IGNvZGU=" }];
+    },
     async stop() { stopped = true; } };
   const env = { DB: { prepare(sql) { let values = [];
     return { bind(...args) { values = args; return this; },
@@ -37,7 +43,8 @@ function fixture() {
     AI_GATEWAY_ACCOUNT_ID: "account", AI_GATEWAY_ID: "default", AI_GATEWAY_TOKEN: "gateway-token", GITHUB_APP_CLIENT_ID: "Iv1.test",
     GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }),
     FAVA_RUN_SECRET: "s".repeat(40) };
-  return { sqlite, env, starts, writes, setTask(value) { task = value; }, wasStopped() { return stopped; } };
+  return { sqlite, env, starts, writes, setTask(value) { task = value; },
+    setSnapshotChanged(value) { snapshotChanged = value; }, wasStopped() { return stopped; } };
 }
 
 test("only a merged spec claims a run, once, then stores its diff and logs", async () => {
@@ -143,6 +150,29 @@ test("spec review rejects unrelated changes before GitHub publication", async ()
     assert.match(row.error, /Billing file is outside/);
     assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, false);
   } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("a changed staged snapshot cannot reach GitHub publication", async () => {
+  const { sqlite, env, setTask, setSnapshotChanged } = fixture();
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  let githubWrites = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions"))
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true,
+          unmet: [], unrelated: [], evidence: ["Requested code change"] }) } }] });
+      githubWrites++;
+      throw Error("Unreviewed code must not reach GitHub");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    setSnapshotChanged(true);
+    await reconcile(env);
+    assert.equal(githubWrites, 0);
+    assert.equal(sqlite.prepare("SELECT pull_number FROM runs WHERE id = ?").get(runId).pull_number, null);
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; sqlite.close(); }
 });
 
 test("publication retries reuse the review for the same diff", async () => {

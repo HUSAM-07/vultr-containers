@@ -103,9 +103,9 @@ export class AgentSandbox extends DurableObject<Env> {
 
   async diff(): Promise<string> {
     if (!this.container.running) throw Error("Run container is unavailable");
-    await this.checked(["git", "add", "--intent-to-add", "."], repoDir);
+    await this.checked(["git", "add", "--all"], repoDir);
     const path = `${taskDir}/diff.patch`;
-    await this.checked(["git", "diff", "--binary", `--output=${path}`, "HEAD"], repoDir);
+    await this.checked(["git", "diff", "--cached", "--binary", `--output=${path}`, "HEAD"], repoDir);
     // shortcut: buffer diffs up to 1 MB; stream larger changes directly to R2 when needed.
     if ((await this.files.stat(path)).size > 1_000_000n) throw Error("Run diff exceeds 1 MB");
     return (await this.files.readFile(path)).text();
@@ -117,8 +117,14 @@ export class AgentSandbox extends DurableObject<Env> {
     return this.checked(["git", "show", `HEAD:${job.specPath}`], repoDir);
   }
 
-  async changes(): Promise<Upload[]> {
-    await this.checked(["git", "add", "--all"], repoDir);
+  async changes(reviewedDiffSha256: string): Promise<Upload[]> {
+    const path = `${taskDir}/publish-diff.patch`;
+    await this.checked(["git", "diff", "--cached", "--binary", `--output=${path}`, "HEAD"], repoDir);
+    if ((await this.files.stat(path)).size > 1_000_000n) throw Error("Run diff exceeds 1 MB");
+    const stagedDiff = await (await this.files.readFile(path)).text();
+    const stagedHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stagedDiff))),
+      byte => byte.toString(16).padStart(2, "0")).join("");
+    if (stagedHash !== reviewedDiffSha256) throw Error("Staged changes differ from reviewed diff");
     const raw = await this.checked(["git", "diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "HEAD"], repoDir);
     const changes = parseChanges(raw);
     let total = 0;

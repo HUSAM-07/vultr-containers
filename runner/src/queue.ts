@@ -106,7 +106,7 @@ export async function reconcile(env: Env) {
         await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
         continue;
       }
-      const files = await sandbox.changes();
+      const files = await sandbox.changes(diffHash);
       const publishing = await env.DB.prepare("UPDATE runs SET publishing_at = COALESCE(publishing_at, ?) WHERE id = ? AND status = 'running'")
         .bind(Date.now(), id).run();
       if (publishing.meta.changes !== 1) continue;
