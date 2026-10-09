@@ -133,8 +133,9 @@ export default function WorkspacePage() {
           </div>
           {runs.length ? <ul className="mt-3 space-y-2">{runs.map(run =>
             <li key={run.id} className="rounded-xl border border-border-button-default bg-background-primary-default p-3">
-              <p className="text-body-medium">Spec #{run.specPullNumber} · {run.status === "succeeded" ? "Agent completed · PR pending" : run.status}</p>
+              <p className="text-body-medium">Spec #{run.specPullNumber} · {run.status === "succeeded" ? run.pullNumber ? "Agent completed · draft PR" : "Agent completed · PR pending" : run.status}</p>
               <p className="mt-1 text-caption-1-regular text-text-secondary">{run.model} · {run.mergedCommitSha.slice(0, 7)}</p>
+              {run.pullNumber && <a href={`https://github.com/${repo}/pull/${run.pullNumber}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Implementation PR #{run.pullNumber} <RiExternalLinkLine className="size-4" aria-hidden /></a>}
               {run.summary && <p className="mt-2 text-body-regular text-text-secondary">{run.summary}</p>}
               {run.error && <p className="mt-2 text-body-regular text-text-error-primary">{run.error}</p>}
               {run.artifactKey && <div className="mt-2 flex flex-wrap gap-3">

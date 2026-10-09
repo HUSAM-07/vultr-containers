@@ -1,9 +1,11 @@
 import { chooseModel } from "../../web/lib/fava-models.ts";
+import { publishImplementation } from "./publish.ts";
 import type { AgentSandbox } from "./sandbox";
 import type { Env, RunJob } from "./types";
 
 type RunRow = { id: string; repository: string; repositoryId: number; installationId: number;
   sha: string; specPath: string; provider: string; model: string };
+type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number };
 
 async function queued(env: Env) {
   const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
@@ -12,8 +14,8 @@ async function queued(env: Env) {
 }
 
 async function running(env: Env) {
-  const result = await env.DB.prepare("SELECT id, COALESCE(started_at, created_at) AS startedAt FROM runs WHERE status = 'running' ORDER BY created_at LIMIT 10")
-    .all<{ id: string; startedAt: number | null }>();
+  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' ORDER BY runs.created_at LIMIT 10")
+    .all<RunningRow>();
   return result.results;
 }
 
@@ -33,7 +35,8 @@ async function saveLogs(env: Env, id: string, sandbox: DurableObjectStub<AgentSa
 }
 
 export async function reconcile(env: Env) {
-  for (const { id, startedAt } of await running(env)) {
+  for (const run of await running(env)) {
+    const { id, startedAt } = run;
     const sandbox = env.SANDBOX.getByName(id);
     try {
       const status = await sandbox.status();
@@ -50,8 +53,9 @@ export async function reconcile(env: Env) {
       const diff = await sandbox.diff();
       if (!diff.trim()) { await fail(env, id, "Agent completed without code changes", prefix); continue; }
       await env.ARTIFACTS.put(`${prefix}/diff.patch`, diff, { httpMetadata: { contentType: "text/x-diff; charset=utf-8" } });
-      await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, completed_at = ? WHERE id = ? AND status = 'running'")
-        .bind(status.result.slice(0, 2000), prefix, Date.now(), id).run();
+      const published = await publishImplementation(env, run, await sandbox.changes(), status.result);
+      await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
+        .bind(status.result.slice(0, 2000), prefix, published.branch, published.pullNumber, Date.now(), id).run();
     } catch (error) {
       console.error("Run reconciliation failed", id, error);
       if (startedAt && Date.now() - startedAt > 45 * 60_000)

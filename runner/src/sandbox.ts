@@ -1,6 +1,8 @@
 import { Files, SandboxFileError } from "@cloudflare/sandbox";
 import { DurableObject } from "cloudflare:workers";
 import { runCapability } from "./capability";
+import { parseChanges } from "./changes.ts";
+import type { Upload } from "./publish.ts";
 import type { Env, RunJob } from "./types";
 
 const repoDir = "/workspace/repo";
@@ -94,10 +96,28 @@ export class AgentSandbox extends DurableObject<Env> {
   async diff(): Promise<string> {
     if (!this.container.running) throw Error("Run container is unavailable");
     await this.checked(["git", "add", "--intent-to-add", "."], repoDir);
-    const diff = await this.checked(["git", "diff", "--binary", "HEAD"], repoDir);
+    const path = `${taskDir}/diff.patch`;
+    await this.checked(["git", "diff", "--binary", `--output=${path}`, "HEAD"], repoDir);
     // shortcut: buffer diffs up to 1 MB; stream larger changes directly to R2 when needed.
-    if (new TextEncoder().encode(diff).byteLength > 1_000_000) throw Error("Run diff exceeds 1 MB");
-    return diff;
+    if ((await this.files.stat(path)).size > 1_000_000n) throw Error("Run diff exceeds 1 MB");
+    return (await this.files.readFile(path)).text();
+  }
+
+  async changes(): Promise<Upload[]> {
+    await this.checked(["git", "add", "--all"], repoDir);
+    const raw = await this.checked(["git", "diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "HEAD"], repoDir);
+    const changes = parseChanges(raw);
+    let total = 0;
+    const uploads: Upload[] = [];
+    for (const change of changes) {
+      if (!change.sha) { uploads.push({ path: change.path, mode: change.mode, content: null }); continue; }
+      total += Number((await this.checked(["git", "cat-file", "-s", change.sha], repoDir)).trim());
+      if (!Number.isSafeInteger(total) || total > 1_000_000) throw Error("Changed files exceed 1 MB");
+      const output = await (await this.container.exec(["git", "cat-file", "blob", change.sha], { cwd: repoDir })).output();
+      if (output.exitCode !== 0) throw Error(`Cannot read changed file ${change.path}`);
+      uploads.push({ path: change.path, mode: change.mode, content: Buffer.from(output.stdout).toString("base64") });
+    }
+    return uploads;
   }
 
   async logs() {

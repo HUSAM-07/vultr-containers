@@ -45,3 +45,15 @@ test("GitHub App JWT signs and installation token is restricted to one repositor
     assert.equal(await installationToken(jwt, 7, 42), "restricted-token");
   } finally { globalThis.fetch = original; }
 });
+
+test("publishing token requests write access only to the selected repository", async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (_url, init) => {
+      assert.deepEqual(JSON.parse(init.body), { repository_ids: [42],
+        permissions: { contents: "write", pull_requests: "write" } });
+      return Response.json({ token: "publish-token" });
+    };
+    assert.equal(await installationToken("jwt", 7, 42, "publish"), "publish-token");
+  } finally { globalThis.fetch = original; }
+});
