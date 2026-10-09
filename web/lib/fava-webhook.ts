@@ -73,6 +73,27 @@ export function appJwt(clientId: string, privateKey: string) {
   return `${unsigned}.${sign("RSA-SHA256", Buffer.from(unsigned), privateKey).toString("base64url")}`;
 }
 
+export async function requireWebhookReady(clientId?: string, privateKey?: string) {
+  if (!clientId || !privateKey) throw new GitHubError(503, "Fava GitHub App credentials are not configured");
+  let app: { events?: string[] };
+  let hook: { url?: string; content_type?: string; insecure_ssl?: string | number; secret?: string };
+  try {
+    const jwt = appJwt(clientId, privateKey);
+    [app, hook] = await Promise.all([
+      github<{ events?: string[] }>(jwt, "/app"),
+      github<{ url?: string; content_type?: string; insecure_ssl?: string | number; secret?: string }>(jwt, "/app/hook/config"),
+    ]);
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 404)
+      throw new GitHubError(503, "Fava GitHub App webhook is not ready for merged specifications");
+    throw new GitHubError(503, "Fava cannot verify its GitHub App webhook settings");
+  }
+  if (!app.events?.includes("pull_request") || !app.events.includes("github_app_authorization") ||
+    !hook.url?.startsWith("https://") || !hook.url.endsWith("/api/github/webhook") ||
+    hook.content_type !== "json" || String(hook.insecure_ssl) !== "0" || !hook.secret)
+    throw new GitHubError(503, "Fava GitHub App webhook is not ready for merged specifications");
+}
+
 export async function processPullRequestEvent(db: Db, payload: unknown, deliveryId: string,
   credentials: { clientId?: string; privateKey?: string }) {
   if (!payload || typeof payload !== "object") throw new GitHubError(400, "Invalid pull request webhook");

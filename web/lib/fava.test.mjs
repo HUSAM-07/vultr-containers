@@ -14,7 +14,7 @@ import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { runEvents } from "./fava-run-events.ts";
 import { createSession, readSession, revokeSession, seal, setSession, unseal } from "./fava-session.ts";
-import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
+import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, requireWebhookReady, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
 
@@ -487,6 +487,34 @@ test("team workspace roles control access and protect its owner", async () => {
     assert.deepEqual(await listProjects(db, 2, [repo]), []);
     assert.deepEqual(await listProjectMembers(db, project.id), []);
   } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("spec PR publication waits for a secure GitHub App webhook subscription", async () => {
+  const original = globalThis.fetch;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" });
+  let events = [];
+  let hookExists = false;
+  let secret = "configured";
+  globalThis.fetch = async url => {
+    if (String(url) === "https://api.github.com/app") return Response.json({ events });
+    if (String(url) === "https://api.github.com/app/hook/config") {
+      if (!hookExists) return Response.json({ message: "Not Found" }, { status: 404 });
+      return Response.json({ url: "https://fava.example.com/api/github/webhook",
+        content_type: "json", insecure_ssl: "0", secret });
+    }
+    throw Error("Unexpected GitHub request");
+  };
+  try {
+    await assert.rejects(requireWebhookReady("Iv1.test", pem), /webhook is not ready/);
+    hookExists = true;
+    await assert.rejects(requireWebhookReady("Iv1.test", pem), /webhook is not ready/);
+    events = ["pull_request", "github_app_authorization"];
+    secret = "";
+    await assert.rejects(requireWebhookReady("Iv1.test", pem), /webhook is not ready/);
+    secret = "configured";
+    await requireWebhookReady("Iv1.test", pem);
+  } finally { globalThis.fetch = original; }
 });
 
 test("signed merge webhook records only a tracked spec-only PR", async () => {

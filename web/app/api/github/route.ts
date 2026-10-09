@@ -6,6 +6,7 @@ import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
 import { refreshRunPreviews } from "@/lib/fava-run-previews";
 import { clearSession, readSession, revokeSession, setSession } from "@/lib/fava-session";
+import { requireWebhookReady } from "@/lib/fava-webhook";
 
 function fail(error: unknown) {
   const status = error instanceof GitHubError && error.status >= 400 && error.status < 500 ? error.status : 502;
@@ -131,6 +132,7 @@ export async function POST(request: NextRequest) {
     try { selected = chooseModel(model); }
     catch { throw new GitHubError(400, "Choose a supported agent model"); }
     const linked = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token, "editor");
+    await requireWebhookReady(process.env.GITHUB_APP_CLIENT_ID, process.env.GITHUB_APP_PRIVATE_KEY);
     const result = await publishSpec(auth.session.token, repo, title, content);
     try { await recordSpec(env.DB, linked.id, auth.session.user.id, result, selected); }
     catch { throw new GitHubError(502, `Spec PR ${result.url} was created, but Fava could not track it. Contact the project owner before merging.`); }
