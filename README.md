@@ -34,6 +34,8 @@ Before deploying, use a [Workers Paid plan](https://developers.cloudflare.com/sa
 
 Model selection currently uses Fava's AI Gateway and its configured provider billing, not the user's Codex or Claude subscription. OpenAI documents [ChatGPT plan usage for open-source and locally hosted apps](https://developers.openai.com/siwc/token-sharing-open-source) and a [self-hosted VM credential transfer flow](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms); offering it in Fava's remotely hosted service requires provider approval. Claude Code supports [Claude plan sign-in for local use](https://docs.anthropic.com/en/docs/claude-code/getting-started), but Fava has no supported third-party cloud subscription connection. Do not collect or paste personal subscription session tokens into Fava.
 
+The planned personal-subscription execution boundary and its required security checks are in [Personal subscription execution](docs/subscription-execution.md).
+
 ## Forge — Vultr Agent Rush demo
 
 Product task manager and sandboxed coding agent for the [Vultr: Agent Rush Hackathon](https://lablab.ai/ai-hackathons/vultr-hackathon). UI tasks can produce a static HTML preview from code executed inside the container. [Requirements and ideas](competition-constraints-and-requirements.md).

@@ -49,6 +49,8 @@ The intended full harness input is an immutable tuple: `{repository, mergedSpecC
 
 Project skills live in `.fava/skills/*.md` in the target repository. A workspace may select shared skills from any linked repository using the same path. The run pins a commit for each selected skill at spec merge, so later edits cannot silently change an in-flight build. Up to eight skills may be selected per project, and each file is limited to 12 KB. Repository instructions such as `AGENTS.md` are imported as context, not executed as commands by the web service.
 
+The proposed device-paired runner for personal Codex and Claude subscriptions is described in [Personal subscription execution](subscription-execution.md). It is not implemented in the current cloud runner.
+
 ## Delivery sequence
 
 1. Register the GitHub App and configure its callback, client secret, installation URL, and the Fava session secret. Verify a real sign-in, repository import, and spec PR.
