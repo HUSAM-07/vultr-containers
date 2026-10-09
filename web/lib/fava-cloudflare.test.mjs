@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths } from "./fava-cloudflare.ts";
+import { CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths } from "./fava-cloudflare.ts";
+
+test("does not attach a Worker already built from another repository", () => {
+  assert.doesNotThrow(() => verifyWorkerRepository([], "repo-1"));
+  assert.doesNotThrow(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-1" }], "repo-1"));
+  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "prod", repo_connection_uuid: "repo-2" }], "repo-1"), CloudflareError);
+  assert.throws(() => verifyWorkerRepository([{ trigger_uuid: "legacy" }], "repo-1"), CloudflareError);
+});
 
 test("selects the production trigger for the linked GitHub repository", () => {
   const triggers = [

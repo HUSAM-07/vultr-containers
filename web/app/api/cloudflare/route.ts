@@ -4,9 +4,10 @@ import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
-import { cloudflare, CloudflareError, cloudflareToken, connectionFor, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type BuildTrigger, type PreviewBuild, type CloudflareConnection } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, cloudflareToken, connectionFor, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths, type BuildTrigger, type PreviewBuild, type CloudflareConnection } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
+type BuildToken = { build_token_uuid: string; build_token_name: string };
 
 function errorResponse(error: unknown) {
   const status = error instanceof CloudflareError || error instanceof GitHubError ? error.status : 502;
@@ -48,6 +49,9 @@ export async function GET(request: NextRequest) {
     const available = connection && canManage
       ? await cloudflare<Worker[]>(token, `/accounts/${connection.cloudflare_account_id}/workers/scripts`)
       : [];
+    const buildTokens = connection && canManage
+      ? await cloudflare<BuildToken[]>(token, `/accounts/${connection.cloudflare_account_id}/builds/tokens`)
+      : [];
     const workers = available.map(worker => ({ name: worker.id, tag: worker.tag }));
     let builds: ReturnType<typeof recentPreviewBuilds> = [];
     if (connection && preview) {
@@ -67,6 +71,7 @@ export async function GET(request: NextRequest) {
       oauthAvailable: Boolean(process.env.CLOUDFLARE_OAUTH_CLIENT_ID && process.env.CLOUDFLARE_OAUTH_CLIENT_SECRET),
       authMethod: canManage ? connection?.auth_method || null : null,
       accountId: canManage ? connection?.cloudflare_account_id || null : null, workers,
+      buildTokens: buildTokens.map(item => ({ id: item.build_token_uuid, name: item.build_token_name })),
       preview: canManage || !preview ? preview : { workerName: preview.workerName }, builds });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;
@@ -115,19 +120,38 @@ export async function POST(request: NextRequest) {
     const repository = await github<{ id: number; owner: { id: number; login: string } }>(auth.session.token,
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`);
     if (repository.id !== project.githubRepoId) throw new CloudflareError(403, "Repository identity changed; relink it to Fava");
-    let production = productionTrigger(triggers, project.defaultBranch, repository.id);
+    const existingProduction = productionTrigger(triggers, project.defaultBranch, repository.id);
+    const rootDirectory = existingProduction?.root_directory ||
+      ("rootDirectory" in body && typeof body.rootDirectory === "string" ? body.rootDirectory : "/");
+    const source = await wranglerSource(auth.session.token, body.repo, project.defaultBranch, rootDirectory);
+    verifyPreviewConfig(source, worker.id);
+    const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
+      `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
+        provider_type: "github", provider_account_id: String(repository.owner.id),
+        provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name });
+    verifyWorkerRepository(triggers, repoConnection.repo_connection_uuid);
+    let production = productionTrigger(triggers, project.defaultBranch, repository.id,
+      repoConnection.repo_connection_uuid);
     if (!production) {
-      const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
-        `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
-          provider_type: "github", provider_account_id: String(repository.owner.id),
-          provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: name });
-      production = productionTrigger(triggers, project.defaultBranch, repository.id,
-        repoConnection.repo_connection_uuid);
+      const buildTokenId = "buildTokenId" in body && typeof body.buildTokenId === "string" ? body.buildTokenId : "";
+      const buildCommand = "buildCommand" in body && typeof body.buildCommand === "string" ? body.buildCommand : "";
+      if (buildCommand.length > 200 || /[\r\n\0]/.test(buildCommand))
+        throw new CloudflareError(400, "Enter a valid build command");
+      const buildTokens = await cloudflare<BuildToken[]>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/tokens`);
+      if (!buildTokens.some(item => item.build_token_uuid === buildTokenId))
+        throw new CloudflareError(400, "Select an existing Cloudflare Builds deployment token");
+      production = await cloudflare<BuildTrigger>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/triggers`, "POST", {
+          external_script_id: worker.tag, repo_connection_uuid: repoConnection.repo_connection_uuid,
+          build_token_uuid: buildTokenId, trigger_name: "Fava production",
+          build_command: buildCommand, deploy_command: "npx wrangler deploy", root_directory: rootDirectory,
+          branch_includes: [project.defaultBranch], branch_excludes: [],
+          path_includes: ["*"], path_excludes: [],
+        });
     }
-    if (!production?.repo_connection_uuid || !production.build_token_uuid)
-      throw new CloudflareError(400, "Connect this Worker to the repository with Workers Builds first");
-    verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch,
-      production.root_directory || "/"), worker.id);
+    if (!production.repo_connection_uuid || !production.build_token_uuid)
+      throw new CloudflareError(502, "Cloudflare did not return a complete production trigger; retry this setup");
     const existing = triggers.find(item => item.branch_includes?.includes("*") &&
       item.branch_excludes?.includes(project.defaultBranch) &&
       item.repo_connection_uuid === production.repo_connection_uuid);
@@ -139,7 +163,7 @@ export async function POST(request: NextRequest) {
         `/accounts/${connection.cloudflare_account_id}/builds/triggers`, "POST", {
           external_script_id: worker.tag, repo_connection_uuid: production.repo_connection_uuid,
           build_token_uuid: production.build_token_uuid, trigger_name: "Fava branch previews",
-          build_command: production.build_command || "npm run build",
+          build_command: production.build_command ?? "",
           deploy_command: "npx wrangler preview", root_directory: production.root_directory || "/",
           branch_includes: ["*"], branch_excludes: [project.defaultBranch],
           path_includes: production.path_includes || ["*"], path_excludes: production.path_excludes || [],

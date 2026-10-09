@@ -198,6 +198,11 @@ export type BuildTrigger = { trigger_uuid: string; repo_connection_uuid?: string
   build_command?: string; deploy_command?: string; root_directory?: string;
   branch_includes?: string[]; branch_excludes?: string[]; path_includes?: string[]; path_excludes?: string[] };
 
+export function verifyWorkerRepository(triggers: BuildTrigger[], connectionUuid: string) {
+  if (triggers.some(trigger => trigger.repo_connection_uuid !== connectionUuid))
+    throw new CloudflareError(409, "This Worker already has Builds connected to another repository");
+}
+
 export function productionTrigger(triggers: BuildTrigger[], branch: string, repoId: number,
   connectionUuid?: string) {
   return triggers.find(item => item.branch_includes?.includes(branch) &&
