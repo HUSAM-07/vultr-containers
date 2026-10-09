@@ -51,7 +51,8 @@ export async function cloudflare<T>(token: string, path: string, method = "GET",
 
 type Binding = Record<string, unknown>;
 type WranglerConfig = { name?: string; previews?: Record<string, unknown>;
-  d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[] };
+  d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[];
+  durable_objects?: { bindings?: Binding[] } };
 
 export function verifyPreviewConfig(source: string, workerName: string) {
   let config: WranglerConfig;
@@ -72,5 +73,28 @@ export function verifyPreviewConfig(source: string, workerName: string) {
         throw new CloudflareError(400, `Preview ${kind} must use a different resource from Production`);
     }
   }
+  const productionObjects = config.durable_objects?.bindings || [];
+  const previewObjects = (config.previews.durable_objects as { bindings?: Binding[] } | undefined)?.bindings || [];
+  if (!Array.isArray(productionObjects) || !Array.isArray(previewObjects))
+    throw new CloudflareError(400, "Invalid Durable Object bindings");
+  for (const binding of productionObjects)
+    if (!previewObjects.some(item => item.name === binding.name && item.class_name === binding.class_name))
+      throw new CloudflareError(400, `Add a Preview Durable Object binding for ${String(binding.name)}`);
   return config;
+}
+
+export type PreviewBuild = { build_uuid: string; created_on?: string; status?: string; build_outcome?: string;
+  preview_url?: string; build_trigger_metadata?: { branch?: string }; trigger?: { trigger_uuid?: string } };
+
+export function recentPreviewBuilds(builds: PreviewBuild[], triggerUuid: string) {
+  const branches = new Set<string>();
+  return builds.filter(build => build.trigger?.trigger_uuid === triggerUuid && build.build_trigger_metadata?.branch)
+    .sort((a, b) => (b.created_on || "").localeCompare(a.created_on || ""))
+    .filter(build => { const branch = build.build_trigger_metadata!.branch!;
+      if (branches.has(branch)) return false;
+      branches.add(branch); return true; })
+    .slice(0, 5)
+    .map(build => ({ branch: build.build_trigger_metadata!.branch!, buildUuid: build.build_uuid,
+      status: build.status || "unknown", outcome: build.build_outcome || null,
+      url: build.preview_url?.startsWith("https://") ? build.preview_url : null }));
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareError, decryptToken, encryptToken, verifyPreviewConfig } from "./fava-cloudflare.ts";
+import { CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig } from "./fava-cloudflare.ts";
 
 test("Cloudflare token is encrypted and round trips", async () => {
   process.env.FAVA_SESSION_SECRET = "a-secure-example-secret-with-more-than-32-characters";
@@ -29,4 +29,25 @@ test("Preview config rejects shared D1 and missing Preview bindings", () => {
     previews: { ...storage.previews, r2_buckets: storage.r2_buckets } }), "app"), CloudflareError);
   assert.throws(() => verifyPreviewConfig(JSON.stringify({ ...storage,
     previews: { ...storage.previews, kv_namespaces: storage.kv_namespaces } }), "app"), CloudflareError);
+});
+
+test("Preview config requires environment Durable Object bindings", () => {
+  const binding = { name: "DATABASE", class_name: "Database" };
+  const config = { name: "app", durable_objects: { bindings: [binding] }, previews: {} };
+  assert.throws(() => verifyPreviewConfig(JSON.stringify(config), "app"), CloudflareError);
+  assert.equal(verifyPreviewConfig(JSON.stringify({ ...config,
+    previews: { durable_objects: { bindings: [binding] } } }), "app").name, "app");
+});
+
+test("recent previews stay on the configured trigger and show the latest build per branch", () => {
+  const builds = [
+    { build_uuid: "old", created_on: "2026-10-01", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" } },
+    { build_uuid: "production", created_on: "2026-10-05", build_trigger_metadata: { branch: "main" }, trigger: { trigger_uuid: "production" } },
+    { build_uuid: "new", created_on: "2026-10-03", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" }, preview_url: "https://example.workers.dev" },
+    { build_uuid: "other", created_on: "2026-10-02", build_trigger_metadata: { branch: "another" }, trigger: { trigger_uuid: "preview" }, preview_url: "javascript:alert(1)" },
+  ];
+  assert.deepEqual(recentPreviewBuilds(builds, "preview"), [
+    { branch: "feature", buildUuid: "new", status: "unknown", outcome: null, url: "https://example.workers.dev" },
+    { branch: "another", buildUuid: "other", status: "unknown", outcome: null, url: null },
+  ]);
 });

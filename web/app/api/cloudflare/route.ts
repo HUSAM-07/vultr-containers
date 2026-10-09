@@ -3,7 +3,7 @@ import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError, parseRepo } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
-import { cloudflare, CloudflareError, decryptToken, encryptToken, verifyPreviewConfig } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, type PreviewBuild } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
 type Trigger = { trigger_uuid: string; repo_connection_uuid?: string; build_token_uuid?: string;
@@ -57,10 +57,25 @@ export async function GET(request: NextRequest) {
     const project = await projectFor(auth.session.user.id, repository);
     const connection = await connectionFor(auth.session.user.id);
     const preview = await env.DB.prepare("SELECT worker_name AS workerName, worker_tag AS workerTag, trigger_uuid AS triggerUuid FROM cloudflare_project_previews WHERE project_id = ? AND account_id = ?")
-      .bind(project.id, `github:${auth.session.user.id}`).first();
-    const workers = connection ? (await workersFor(connection)).workers.map(worker => ({ name: worker.id, tag: worker.tag })) : [];
+      .bind(project.id, `github:${auth.session.user.id}`).first<{ workerName: string; workerTag: string; triggerUuid: string }>();
+    const { token, workers: available } = connection ? await workersFor(connection) : { token: "", workers: [] as Worker[] };
+    const workers = available.map(worker => ({ name: worker.id, tag: worker.tag }));
+    let builds: ReturnType<typeof recentPreviewBuilds> = [];
+    if (connection && preview) {
+      const list = await cloudflare<PreviewBuild[]>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/workers/${preview.workerTag}/builds?per_page=30`);
+      builds = recentPreviewBuilds(list, preview.triggerUuid);
+      builds = await Promise.all(builds.map(async build => {
+        if (build.url || build.outcome !== "success") return build;
+        try {
+          const detail = await cloudflare<PreviewBuild>(token,
+            `/accounts/${connection.cloudflare_account_id}/builds/builds/${build.buildUuid}`);
+          return { ...build, url: detail.preview_url?.startsWith("https://") ? detail.preview_url : null };
+        } catch { return build; }
+      }));
+    }
     const response = NextResponse.json({ connected: Boolean(connection),
-      accountId: connection?.cloudflare_account_id || null, workers, preview });
+      accountId: connection?.cloudflare_account_id || null, workers, preview, builds });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;
   } catch (error) { return errorResponse(error); }
@@ -124,10 +139,9 @@ export async function POST(request: NextRequest) {
     if (existing && existing.repo_connection_uuid !== production.repo_connection_uuid)
       throw new CloudflareError(400, "This Worker's Preview trigger builds from a different repository");
     let triggerUuid = existing?.trigger_uuid;
-    if (existing && existing.deploy_command !== "npx wrangler preview") {
-      await cloudflare(token, `/accounts/${connection.cloudflare_account_id}/builds/triggers/${triggerUuid}`,
-        "PATCH", { deploy_command: "npx wrangler preview" });
-    } else if (!existing) {
+    if (existing && existing.deploy_command !== "npx wrangler preview")
+      throw new CloudflareError(400, "Switch this Worker's existing Preview build to Worker Previews in Cloudflare first; that migration cannot be reversed");
+    if (!existing) {
       const trigger = await cloudflare<{ trigger_uuid: string }>(token,
         `/accounts/${connection.cloudflare_account_id}/builds/triggers`, "POST", {
           external_script_id: worker.tag, repo_connection_uuid: production.repo_connection_uuid,

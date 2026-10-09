@@ -6,7 +6,8 @@ import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 
 type State = { connected: boolean; accountId: string | null; workers: { name: string; tag: string }[];
-  preview: { workerName: string; triggerUuid: string } | null };
+  preview: { workerName: string; triggerUuid: string } | null;
+  builds: { branch: string; buildUuid: string; status: string; outcome: string | null; url: string | null }[] };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
@@ -63,8 +64,9 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
     </div> : <div className="mt-4 grid gap-3">
       <p className="text-caption-1-regular text-text-secondary">Connected account <span className="font-mono">{state.accountId}</span></p>
       {state.workers.length ? <><p className="text-body-medium">Choose a Worker</p><div role="group" aria-label="Cloudflare Worker" className="flex flex-wrap gap-2">{state.workers.map(worker => <Button key={worker.tag} size="small" variant={workerName === worker.name ? "primary" : "secondary"} aria-pressed={workerName === worker.name} onClick={() => setWorkerName(worker.name)}>{worker.name}</Button>)}</div></> : <p className="text-body-regular text-text-secondary">No Workers are deployed in this account yet.</p>}
-      <p className="text-caption-1-regular text-text-tertiary">The repository needs a root Wrangler config with a <code>previews</code> block and separate Preview D1, R2, and KV resources. Set Preview secrets separately, and connect the Worker to this GitHub repository in Cloudflare Builds first.</p>
+      <p className="text-caption-1-regular text-text-tertiary">The repository needs a root Wrangler config with a <code>previews</code> block, Preview Durable Object bindings, and separate Preview D1, R2, and KV resources. Set Preview secrets separately, and connect the Worker to this GitHub repository in Cloudflare Builds first. D1, R2, and KV resources are shared between branch Previews unless a branch overrides them.</p>
       {state.preview ? <p role="status" className="rounded-xl border border-border-button-default bg-background-primary-default p-3 text-body-regular">Previews enabled for <strong>{state.preview.workerName}</strong>. Branch pushes will use <code>npx wrangler preview</code>.</p> : <Button size="small" disabled={busy || !workerName} onClick={() => void act("enable")}>Enable branch Previews</Button>}
+      {state.preview && <div className="grid gap-2" aria-label="Recent branch Previews"><h4 className="text-body-medium">Recent branches</h4>{state.builds.length ? state.builds.map(build => <div key={build.buildUuid} className="flex items-center justify-between gap-2 rounded-xl border border-border-button-default bg-background-primary-default p-3 text-body-regular"><span className="min-w-0 truncate font-mono">{build.branch}</span>{build.url ? <a href={build.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1 text-accent-600 hover:underline">Open Preview <RiExternalLinkLine className="size-4" aria-hidden /></a> : <span className="shrink-0 text-text-tertiary">{build.outcome || build.status}</span>}</div>) : <p className="text-body-regular text-text-secondary">No branch builds yet. Push a branch to create its Preview.</p>}</div>}
       <div className="flex flex-wrap gap-3"><a className="inline-flex items-center gap-1 text-caption-1-semibold text-accent-600 hover:underline" href={`https://dash.cloudflare.com/${state.accountId}/workers/services/view/${encodeURIComponent(state.preview?.workerName || workerName)}`} target="_blank" rel="noreferrer">Open Worker <RiExternalLinkLine className="size-4" aria-hidden /></a><Button variant="ghost" size="xs" disabled={busy} onClick={() => void act("disconnect")}>Disconnect Fava access</Button></div>
       <p className="text-caption-1-regular text-text-tertiary">Disconnecting Fava access does not stop Cloudflare Builds. Disable its trigger in Cloudflare if needed.</p>
     </div>}
