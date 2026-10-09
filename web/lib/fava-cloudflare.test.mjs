@@ -72,6 +72,20 @@ test("Preview config isolates other account resources and declares containers an
   ]) assert.throws(() => verifyPreviewConfig(JSON.stringify({ ...config, previews }), "app"), CloudflareError);
 });
 
+test("Preview config repeats API bindings, Worker Loaders, and define names", () => {
+  const config = { name: "app", ai: { binding: "AI" }, browser: { binding: "BROWSER" },
+    worker_loaders: [{ binding: "LOADER" }], define: { API_URL: "prod" },
+    previews: { ai: { binding: "AI" }, browser: { binding: "BROWSER" },
+      worker_loaders: [{ binding: "LOADER" }], define: { API_URL: "preview" } } };
+  assert.equal(verifyPreviewConfig(JSON.stringify(config), "app").name, "app");
+  for (const previews of [
+    { ...config.previews, ai: undefined },
+    { ...config.previews, browser: { binding: "OTHER" } },
+    { ...config.previews, worker_loaders: [] },
+    { ...config.previews, define: {} },
+  ]) assert.throws(() => verifyPreviewConfig(JSON.stringify({ ...config, previews }), "app"), CloudflareError);
+});
+
 test("recent previews stay on the configured trigger and show the latest build per branch", () => {
   const builds = [
     { build_uuid: "old", created_on: "2026-10-01", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" } },

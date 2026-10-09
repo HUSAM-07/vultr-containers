@@ -52,7 +52,7 @@ type Binding = Record<string, unknown>;
 type WranglerConfig = { name?: string; previews?: Record<string, unknown>;
   d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[];
   durable_objects?: { bindings?: Binding[] }; queues?: { producers?: Binding[] }; containers?: Binding[];
-  vars?: Record<string, unknown> };
+  vars?: Record<string, unknown>; define?: Record<string, unknown>; worker_loaders?: Binding[] };
 
 export function wranglerConfigPaths(rootDirectory: string) {
   const root = rootDirectory.replace(/^(?:\.\/|\/)|\/$/g, "");
@@ -120,6 +120,21 @@ export function verifyPreviewConfig(source: string, workerName: string) {
     !config.previews.vars || Array.isArray(config.previews.vars) ||
     Object.keys(config.vars).some(key => !Object.hasOwn(config.previews!.vars!, key))))
     throw new CloudflareError(400, "Add Preview variables for the production variable names");
+  if (config.define && (Array.isArray(config.define) || typeof config.previews.define !== "object" ||
+    !config.previews.define || Array.isArray(config.previews.define) ||
+    Object.keys(config.define).some(key => !Object.hasOwn(config.previews!.define!, key))))
+    throw new CloudflareError(400, "Add Preview define values for the production names");
+  for (const kind of ["ai", "browser", "images", "stream", "media", "version_metadata"] as const) {
+    const production = (config as Record<string, unknown>)[kind] as Binding | undefined;
+    if (!production) continue;
+    const preview = config.previews[kind] as Binding | undefined;
+    if (typeof production.binding !== "string" || !production.binding || preview?.binding !== production.binding)
+      throw new CloudflareError(400, `Add a Preview ${kind} binding named ${String(production.binding)}`);
+  }
+  if (config.worker_loaders && (!Array.isArray(config.worker_loaders) ||
+    !Array.isArray(config.previews.worker_loaders) || config.worker_loaders.some(binding =>
+      !(config.previews!.worker_loaders as Binding[]).some(item => item.binding === binding.binding))))
+    throw new CloudflareError(400, "Add Preview Worker Loader bindings for the production names");
   const productionObjects = config.durable_objects?.bindings || [];
   const previewObjects = (config.previews.durable_objects as { bindings?: Binding[] } | undefined)?.bindings || [];
   if (!Array.isArray(productionObjects) || !Array.isArray(previewObjects))
