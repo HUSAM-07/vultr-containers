@@ -51,7 +51,8 @@ export async function cloudflare<T>(token: string, path: string, method = "GET",
 type Binding = Record<string, unknown>;
 type WranglerConfig = { name?: string; previews?: Record<string, unknown>;
   d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[];
-  durable_objects?: { bindings?: Binding[] } };
+  durable_objects?: { bindings?: Binding[] }; queues?: { producers?: Binding[] }; containers?: Binding[];
+  vars?: Record<string, unknown> };
 
 export function wranglerConfigPaths(rootDirectory: string) {
   const root = rootDirectory.replace(/^(?:\.\/|\/)|\/$/g, "");
@@ -69,18 +70,56 @@ export function verifyPreviewConfig(source: string, workerName: string) {
   if (config.name !== workerName) throw new CloudflareError(400, "Wrangler Worker name must match the selected Cloudflare Worker");
   if (!config.previews || typeof config.previews !== "object" || Array.isArray(config.previews))
     throw new CloudflareError(400, "Add a previews block to wrangler.json or wrangler.jsonc first");
-  for (const [kind, identity] of [["d1_databases", "database_id"], ["r2_buckets", "bucket_name"], ["kv_namespaces", "id"]] as const) {
-    const production = config[kind] || [];
+  for (const [kind, identity] of [["d1_databases", "database_id"], ["r2_buckets", "bucket_name"],
+    ["kv_namespaces", "id"], ["vectorize", "index_name"], ["hyperdrive", "id"],
+    ["analytics_engine_datasets", "dataset"], ["pipelines", "stream"],
+    ["workflows", "name"], ["dispatch_namespaces", "namespace"],
+    ["mtls_certificates", "certificate_id"], ["vpc_services", "service_id"],
+    ["services", "service"], ["ratelimits", "namespace_id"]] as const) {
+    const production = (config as Record<string, unknown>)[kind] || [];
     const preview = config.previews[kind] as Binding[] | undefined || [];
     if (!Array.isArray(production) || !Array.isArray(preview)) throw new CloudflareError(400, `Invalid ${kind} bindings`);
     for (const binding of production) {
-      const same = preview.find(item => item.binding === binding.binding);
-      if (!same || typeof same[identity] !== "string" || !same[identity])
-        throw new CloudflareError(400, `Add an isolated Preview ${kind} binding for ${String(binding.binding)}`);
-      if (same[identity] === binding[identity])
+      const key = kind === "ratelimits" ? "name" : "binding";
+      const same = preview.find(item => item[key] === binding[key]);
+      const previewId = kind === "pipelines" ? same?.stream || same?.pipeline : same?.[identity];
+      const productionId = kind === "pipelines" ? binding.stream || binding.pipeline : binding[identity];
+      if (typeof previewId !== "string" || !previewId)
+        throw new CloudflareError(400, `Add an isolated Preview ${kind} binding for ${String(binding[key])}`);
+      if (previewId === productionId)
         throw new CloudflareError(400, `Preview ${kind} must use a different resource from Production`);
     }
   }
+  const productionQueues = config.queues?.producers || [];
+  const previewQueues = (config.previews.queues as { producers?: Binding[] } | undefined)?.producers || [];
+  if (!Array.isArray(productionQueues) || !Array.isArray(previewQueues))
+    throw new CloudflareError(400, "Invalid Queue producer bindings");
+  for (const binding of productionQueues) {
+    const same = previewQueues.find(item => item.binding === binding.binding);
+    if (!same?.queue || typeof same.queue !== "string" || same.queue === binding.queue)
+      throw new CloudflareError(400, `Add an isolated Preview Queue for ${String(binding.binding)}`);
+  }
+  const productionSecrets = (config as Record<string, unknown>).secrets_store_secrets || [];
+  const previewSecrets = config.previews.secrets_store_secrets || [];
+  if (!Array.isArray(productionSecrets) || !Array.isArray(previewSecrets))
+    throw new CloudflareError(400, "Invalid Secrets Store bindings");
+  for (const binding of productionSecrets) {
+    const same = previewSecrets.find(item => item.binding === binding.binding);
+    if (!same || typeof same.store_id !== "string" || typeof same.secret_name !== "string" ||
+      same.store_id === binding.store_id && same.secret_name === binding.secret_name)
+      throw new CloudflareError(400, `Add an isolated Preview secret for ${String(binding.binding)}`);
+  }
+  const productionContainers = config.containers || [];
+  const previewContainers = config.previews.containers as Binding[] | undefined || [];
+  if (!Array.isArray(productionContainers) || !Array.isArray(previewContainers))
+    throw new CloudflareError(400, "Invalid Container bindings");
+  for (const container of productionContainers)
+    if (!previewContainers.some(item => item.class_name === container.class_name))
+      throw new CloudflareError(400, `Add a Preview Container for ${String(container.class_name)}`);
+  if (config.vars && (Array.isArray(config.vars) || typeof config.previews.vars !== "object" ||
+    !config.previews.vars || Array.isArray(config.previews.vars) ||
+    Object.keys(config.vars).some(key => !Object.hasOwn(config.previews!.vars!, key))))
+    throw new CloudflareError(400, "Add Preview variables for the production variable names");
   const productionObjects = config.durable_objects?.bindings || [];
   const previewObjects = (config.previews.durable_objects as { bindings?: Binding[] } | undefined)?.bindings || [];
   if (!Array.isArray(productionObjects) || !Array.isArray(previewObjects))

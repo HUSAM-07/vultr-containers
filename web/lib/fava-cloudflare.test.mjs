@@ -50,6 +50,28 @@ test("Preview config requires environment Durable Object bindings", () => {
     previews: { durable_objects: { bindings: [binding] } } }), "app").name, "app");
 });
 
+test("Preview config isolates other account resources and declares containers and variables", () => {
+  const config = { name: "app", vectorize: [{ binding: "SEARCH", index_name: "prod-index" }],
+    pipelines: [{ binding: "EVENTS", pipeline: "prod-stream" }],
+    queues: { producers: [{ binding: "JOBS", queue: "prod-jobs" }] },
+    secrets_store_secrets: [{ binding: "API_KEY", store_id: "store", secret_name: "prod-key" }],
+    containers: [{ class_name: "Runner", image: "./Dockerfile" }], vars: { ENVIRONMENT: "production" },
+    previews: { vectorize: [{ binding: "SEARCH", index_name: "preview-index" }],
+      pipelines: [{ binding: "EVENTS", stream: "preview-stream" }],
+      queues: { producers: [{ binding: "JOBS", queue: "preview-jobs" }] },
+      secrets_store_secrets: [{ binding: "API_KEY", store_id: "store", secret_name: "preview-key" }],
+      containers: [{ class_name: "Runner", image: "./Dockerfile" }], vars: { ENVIRONMENT: "preview" } } };
+  assert.equal(verifyPreviewConfig(JSON.stringify(config), "app").name, "app");
+  for (const previews of [
+    { ...config.previews, vectorize: config.vectorize },
+    { ...config.previews, pipelines: [{ binding: "EVENTS", stream: "prod-stream" }] },
+    { ...config.previews, queues: config.queues },
+    { ...config.previews, secrets_store_secrets: config.secrets_store_secrets },
+    { ...config.previews, containers: [] },
+    { ...config.previews, vars: {} },
+  ]) assert.throws(() => verifyPreviewConfig(JSON.stringify({ ...config, previews }), "app"), CloudflareError);
+});
+
 test("recent previews stay on the configured trigger and show the latest build per branch", () => {
   const builds = [
     { build_uuid: "old", created_on: "2026-10-01", build_trigger_metadata: { branch: "feature" }, trigger: { trigger_uuid: "preview" } },
