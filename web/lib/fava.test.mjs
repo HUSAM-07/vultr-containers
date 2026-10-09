@@ -229,6 +229,33 @@ test("context import reads repository instructions and a bounded file map", asyn
   } finally { globalThis.fetch = original; }
 });
 
+test("public context import reads without credentials and stops at private metadata", async () => {
+  const original = globalThis.fetch;
+  const commitSha = "c".repeat(40);
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push(String(url));
+    assert.equal(init.headers.Authorization, undefined);
+    if (requests.length === 1) return Response.json({ private: false, default_branch: "main" });
+    if (requests.length === 2) return Response.json({ commit: { sha: commitSha } });
+    if (requests.length === 3) return Response.json({ tree: [{ path: "README.md", type: "blob" }], truncated: false });
+    return Response.json({ content: Buffer.from("Public instructions").toString("base64"), encoding: "base64", size: 19 });
+  };
+  try {
+    const context = await importContext("", "owner/repo", true);
+    assert.deepEqual(context.files, [{ path: "README.md", text: "Public instructions" }]);
+    assert.equal(requests.length, 4);
+    requests.length = 0;
+    globalThis.fetch = async (_url, init) => {
+      requests.push("metadata");
+      assert.equal(init.headers.Authorization, undefined);
+      return Response.json({ private: true, default_branch: "main" });
+    };
+    await assert.rejects(importContext("", "owner/repo", true), /Connect GitHub to import a private repository/);
+    assert.equal(requests.length, 1);
+  } finally { globalThis.fetch = original; }
+});
+
 test("context import includes nested agent instructions and skips invalid text", async () => {
   const original = globalThis.fetch;
   const commitSha = "b".repeat(40);

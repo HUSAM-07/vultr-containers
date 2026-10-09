@@ -81,7 +81,7 @@ export function validateSpec(title: string, content: string) {
 
 export async function github<T>(token: string, path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch("https://api.github.com" + path, {
-    method, headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json",
+    method, headers: { ...(token ? { Authorization: "Bearer " + token } : {}), Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2026-03-10", ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined, cache: "no-store",
   });
@@ -150,9 +150,11 @@ export async function listRepositories(token: string): Promise<Repository[]> {
   return found.sort((a, b) => a.fullName.localeCompare(b.fullName));
 }
 
-export async function importContext(token: string, name: string) {
+export async function importContext(token: string, name: string, publicOnly = false) {
   const repo = parseRepo(name);
   const metadata = await github<GitHubRepo>(token, `/repos/${repo}`);
+  if (publicOnly && metadata.private !== false)
+    throw new GitHubError(403, "Connect GitHub to import a private repository");
   const head = await github<{ commit: { sha: string } }>(token,
     `/repos/${repo}/branches/${encodeURIComponent(metadata.default_branch)}`);
   if (!/^[a-f0-9]{40}$/i.test(head.commit?.sha || ""))
