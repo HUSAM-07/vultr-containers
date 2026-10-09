@@ -1,0 +1,76 @@
+import JSON5 from "json5";
+
+export class CloudflareError extends Error {
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
+const base = "https://api.cloudflare.com/client/v4";
+const encoder = new TextEncoder();
+
+function base64url(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64url(value: string) {
+  return Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), char => char.charCodeAt(0));
+}
+
+async function key() {
+  const secret = process.env.FAVA_SESSION_SECRET;
+  if (!secret || secret.length < 32) throw new CloudflareError(503, "Fava credential encryption is not configured");
+  const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`fava:cloudflare:${secret}`));
+  return crypto.subtle.importKey("raw", hash, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+export async function encryptToken(token: string) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await key(), encoder.encode(token));
+  return `${base64url(iv)}.${base64url(new Uint8Array(data))}`;
+}
+
+export async function decryptToken(value: string) {
+  try {
+    const [iv, data] = value.split(".");
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64url(iv) }, await key(), fromBase64url(data));
+    return new TextDecoder().decode(plain);
+  } catch { throw new CloudflareError(503, "Cloudflare connection needs to be reconnected"); }
+}
+
+export async function cloudflare<T>(token: string, path: string, method = "GET", body?: unknown): Promise<T> {
+  const response = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`,
+    ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" });
+  const payload = await response.json().catch(() => null) as { success?: boolean; result?: T;
+    errors?: { message?: string }[] } | null;
+  if (!response.ok || !payload?.success)
+    throw new CloudflareError(response.status === 401 || response.status === 403 ? 403 : 502,
+      payload?.errors?.[0]?.message || "Cloudflare request failed");
+  return payload.result as T;
+}
+
+type Binding = Record<string, unknown>;
+type WranglerConfig = { name?: string; previews?: Record<string, unknown>;
+  d1_databases?: Binding[]; r2_buckets?: Binding[]; kv_namespaces?: Binding[] };
+
+export function verifyPreviewConfig(source: string, workerName: string) {
+  let config: WranglerConfig;
+  try { config = JSON5.parse(source) as WranglerConfig; }
+  catch { throw new CloudflareError(400, "Wrangler configuration is not valid JSON or JSONC"); }
+  if (config.name !== workerName) throw new CloudflareError(400, "Wrangler Worker name must match the selected Cloudflare Worker");
+  if (!config.previews || typeof config.previews !== "object" || Array.isArray(config.previews))
+    throw new CloudflareError(400, "Add a previews block to wrangler.json or wrangler.jsonc first");
+  for (const [kind, identity] of [["d1_databases", "database_id"], ["r2_buckets", "bucket_name"], ["kv_namespaces", "id"]] as const) {
+    const production = config[kind] || [];
+    const preview = config.previews[kind] as Binding[] | undefined || [];
+    if (!Array.isArray(production) || !Array.isArray(preview)) throw new CloudflareError(400, `Invalid ${kind} bindings`);
+    for (const binding of production) {
+      const same = preview.find(item => item.binding === binding.binding);
+      if (!same || typeof same[identity] !== "string" || !same[identity])
+        throw new CloudflareError(400, `Add an isolated Preview ${kind} binding for ${String(binding.binding)}`);
+      if (same[identity] === binding[identity])
+        throw new CloudflareError(400, `Preview ${kind} must use a different resource from Production`);
+    }
+  }
+  return config;
+}

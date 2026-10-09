@@ -7,6 +7,7 @@ import { RiAddLine, RiArrowRightLine, RiBookOpenLine, RiExternalLinkLine, RiFile
 import { Button, ButtonLink } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { Textarea } from "@/components/base/textarea/textarea";
+import { CloudflarePreviewPanel } from "@/components/application/cloudflare-preview-panel";
 import { agentModels } from "@/lib/fava-models";
 import { cx } from "@/utils/cx";
 
@@ -145,6 +146,7 @@ export default function WorkspacePage() {
               {run.previewUrl?.startsWith("https://") && <a href={run.previewUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Preview <RiExternalLinkLine className="size-4" aria-hidden /></a>}
             </li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">No implementation run has been queued for this project.</p>}
         </div>}
+        {session?.connected && repo && projects.some(project => project.repository === repo) && <CloudflarePreviewPanel repository={repo} />}
         <div className="mt-6 border-t border-separator-border pt-5"><a href="/demo" className="inline-flex items-center gap-2 text-body-medium text-text-secondary hover:text-text-primary">View the current agent demo <RiArrowRightLine className="size-4" aria-hidden /></a></div></aside>
     </div>
   </main>;

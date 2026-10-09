@@ -18,6 +18,7 @@
     "@remixicon/react": "^4.9.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@vinext/cloudflare": "^1.1.0",
+    "json5": "^2.2.3",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-aria-components": "^1.21.1",

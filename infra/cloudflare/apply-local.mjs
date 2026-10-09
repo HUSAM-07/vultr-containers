@@ -68,3 +68,16 @@ if (startColumns.includes("started_at")) {
   if (!installed.includes("started_at")) throw Error("Local run-start migration verification failed");
   console.log("Local Fava run-start migration applied");
 }
+
+const previewTables = ["cloudflare_connections", "cloudflare_project_previews"];
+const currentPreviewTables = (await query("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map(row => row[0]);
+if (previewTables.every(name => currentPreviewTables.includes(name))) {
+  console.log("Local Cloudflare Preview migration is already applied");
+} else if (previewTables.some(name => currentPreviewTables.includes(name))) {
+  throw Error("Local D1 has a partial Cloudflare Preview migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0005_worker_previews.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'table'")).rows.map(row => row[0]);
+  if (!previewTables.every(name => installed.includes(name))) throw Error("Local Cloudflare Preview migration verification failed");
+  console.log("Local Cloudflare Preview migration applied");
+}
