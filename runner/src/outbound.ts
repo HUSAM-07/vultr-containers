@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { decryptToken } from "../../web/lib/fava-cloudflare.ts";
-import { allowedMcpRequest, mcpServerUrl, mcpTools } from "../../web/lib/fava-mcp.ts";
+import { allowedMcpRequest, mcpForwardHeaders, mcpServerUrl, mcpTools } from "../../web/lib/fava-mcp.ts";
 import { gatewayRequest, readRunCapability } from "./capability";
 import { appJwt, installationToken, isGitReadRequest } from "./github";
 import type { Env } from "./types";
@@ -76,14 +76,14 @@ export class Outbound extends WorkerEntrypoint<Env> {
       const target = mcpServerUrl(grant.serverUrl);
       const tools = mcpTools(JSON.parse(grant.toolsJson));
       let body: Uint8Array | undefined;
+      let rpc: unknown;
       if (request.method === "POST") {
         body = await limitedBody(request);
-        if (!allowedMcpRequest(JSON.parse(new TextDecoder().decode(body)), tools))
+        rpc = JSON.parse(new TextDecoder().decode(body));
+        if (!allowedMcpRequest(rpc, tools))
           return new Response("MCP tool is not approved", { status: 403 });
       }
-      const headers = new Headers();
-      for (const name of ["accept", "content-type", "mcp-protocol-version", "mcp-session-id", "last-event-id"])
-        if (request.headers.has(name)) headers.set(name, request.headers.get(name)!);
+      const headers = mcpForwardHeaders(request.headers, rpc);
       if (grant.credentialRef)
         headers.set("authorization", `Bearer ${await decryptToken(grant.credentialRef, "mcp", this.env.FAVA_SESSION_SECRET)}`);
       const upstream = await fetch(target, { method: request.method, headers, body: body?.buffer as ArrayBuffer | undefined,

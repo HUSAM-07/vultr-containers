@@ -25,3 +25,19 @@ export function allowedMcpRequest(value: unknown, tools: string[]) {
     tools.includes(request.params.name);
   return ["initialize", "notifications/initialized", "ping", "server/discover", "tools/list"].includes(String(request.method));
 }
+
+export function mcpForwardHeaders(inbound: Headers, value?: unknown) {
+  const headers = new Headers();
+  for (const name of ["accept", "content-type", "mcp-protocol-version", "mcp-session-id", "last-event-id"])
+    if (inbound.has(name)) headers.set(name, inbound.get(name)!);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const request = value as { method?: unknown; params?: { name?: unknown } };
+    if (typeof request.method === "string") headers.set("mcp-method", request.method);
+    if (request.method === "tools/call" && typeof request.params?.name === "string")
+      headers.set("mcp-name", request.params.name);
+    inbound.forEach((content, name) => {
+      if (name.startsWith("mcp-param-")) headers.set(name, content);
+    });
+  }
+  return headers;
+}
