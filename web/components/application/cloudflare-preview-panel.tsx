@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { RiCloudLine, RiExternalLinkLine, RiRefreshLine } from "@remixicon/react";
-import { Button } from "@/components/base/buttons/button";
+import { Button, ButtonLink } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 
-type State = { connected: boolean; canManage: boolean; accountId: string | null; workers: { name: string; tag: string }[];
+type State = { connected: boolean; canManage: boolean; accountId: string | null;
+  oauthAvailable: boolean; authMethod: "token" | "oauth" | null;
+  workers: { name: string; tag: string }[];
   preview: { workerName: string; triggerUuid?: string } | null;
   builds: { branch: string; buildUuid: string; status: string; outcome: string | null; url: string | null }[] };
 
@@ -58,12 +60,16 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
     {error && <p role="alert" className="mt-3 text-body-regular text-text-error-primary">{error}</p>}
     {!state ? null : !state.connected && !state.canManage ? <p className="mt-4 text-body-regular text-text-secondary">A project admin can connect Cloudflare to enable branch Previews.</p> : !state.connected ? <div className="mt-4 grid gap-3">
       <Input label="Cloudflare account ID" value={accountId} onChange={setAccountId} placeholder="32-character account ID" />
+      {state.oauthAvailable && <><ButtonLink size="small" href={`/api/cloudflare/oauth/start?repo=${encodeURIComponent(repository)}&account=${encodeURIComponent(accountId.trim())}`}
+        aria-disabled={busy || !/^[a-f0-9]{32}$/i.test(accountId.trim())}
+        onClick={event => { if (busy || !/^[a-f0-9]{32}$/i.test(accountId.trim())) event.preventDefault(); }}>Authorize with Cloudflare</ButtonLink>
+        <p className="text-caption-1-regular text-text-tertiary">Grant Fava Workers Scripts Read and Workers CI Write for the selected Cloudflare account. Fava stores encrypted, refreshable credentials for this workspace.</p></>}
       <Input label="User API token" type="password" value={token} onChange={setToken} placeholder="Workers Builds Configuration: Edit" />
       <p className="text-caption-1-regular text-text-tertiary">Use a user-scoped token with Workers Scripts Read and Workers Builds Configuration Edit. Fava encrypts it for this workspace; its project administrators can use this connection.</p>
-      <Button size="small" disabled={busy || !accountId || !token} onClick={() => void act("connect")}>Connect Cloudflare</Button>
+      <Button size="small" disabled={busy || !accountId || !token} onClick={() => void act("connect")}>Connect with API token</Button>
       <a className="inline-flex items-center gap-1 text-caption-1-semibold text-accent-600 hover:underline" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Create an API token <RiExternalLinkLine className="size-4" aria-hidden /></a>
     </div> : <div className="mt-4 grid gap-3">
-      {state.canManage && <><p className="text-caption-1-regular text-text-secondary">Connected account <span className="font-mono">{state.accountId}</span></p>
+      {state.canManage && <><p className="text-caption-1-regular text-text-secondary">Connected account <span className="font-mono">{state.accountId}</span>{state.authMethod === "oauth" ? " via Cloudflare authorization" : " via API token"}</p>
         {state.workers.length ? <><p className="text-body-medium">Choose a Worker</p><div role="group" aria-label="Cloudflare Worker" className="flex flex-wrap gap-2">{state.workers.map(worker => <Button key={worker.tag} size="small" variant={workerName === worker.name ? "primary" : "secondary"} aria-pressed={workerName === worker.name} onClick={() => setWorkerName(worker.name)}>{worker.name}</Button>)}</div></> : <p className="text-body-regular text-text-secondary">No Workers are deployed in this account yet.</p>}
         <p className="text-caption-1-regular text-text-tertiary">The repository needs Wrangler 4.135.0 or later and a root Wrangler config with a <code>previews</code> block. Configure Preview variables, API bindings, Worker Loaders, define values, containers, Durable Object bindings, and separate account resources such as D1, R2, KV, and queues. Set Preview secrets separately, and connect the Worker to this GitHub repository in Cloudflare Builds first. Branch Previews that reference the same account resource share its data.</p></>}
       {state.preview ? <p role="status" className="rounded-xl border border-border-button-default bg-background-primary-default p-3 text-body-regular">Previews enabled for <strong>{state.preview.workerName}</strong>. Branch pushes will use <code>npx wrangler preview</code>.</p> : state.canManage ? <Button size="small" disabled={busy || !workerName} onClick={() => void act("enable")}>Enable branch Previews</Button> : <p className="text-body-regular text-text-secondary">A project admin can enable branch Previews.</p>}

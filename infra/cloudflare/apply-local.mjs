@@ -141,3 +141,16 @@ if (sessionColumns.includes("payload_ciphertext")) {
   if (!installed.includes("payload_ciphertext")) throw Error("Local server-session migration verification failed");
   console.log("Local server-session migration applied");
 }
+
+const cloudflareColumns = (await query("PRAGMA table_info(cloudflare_connections)")).rows.map(row => row[1]);
+const oauthColumns = ["auth_method", "refresh_ciphertext", "token_expires_at"];
+if (oauthColumns.every(name => cloudflareColumns.includes(name))) {
+  console.log("Local Cloudflare OAuth migration is already applied");
+} else if (oauthColumns.some(name => cloudflareColumns.includes(name))) {
+  throw Error("Local D1 has a partial Cloudflare OAuth migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0012_cloudflare_oauth.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(cloudflare_connections)")).rows.map(row => row[1]);
+  if (!oauthColumns.every(name => installed.includes(name))) throw Error("Local Cloudflare OAuth migration verification failed");
+  console.log("Local Cloudflare OAuth migration applied");
+}

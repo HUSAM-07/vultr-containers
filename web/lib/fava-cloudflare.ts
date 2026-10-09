@@ -1,4 +1,5 @@
 import JSON5 from "json5";
+import type { env } from "./runtime-env.ts";
 
 export class CloudflareError extends Error {
   status: number;
@@ -7,6 +8,14 @@ export class CloudflareError extends Error {
 
 const base = "https://api.cloudflare.com/client/v4";
 const encoder = new TextEncoder();
+export type CloudflareConnection = { account_id: string; cloudflare_account_id: string;
+  token_ciphertext: string; auth_method: "token" | "oauth";
+  refresh_ciphertext: string | null; token_expires_at: number | null };
+
+export async function connectionFor(db: typeof env.DB, accountId: string) {
+  return db.prepare("SELECT account_id, cloudflare_account_id, token_ciphertext, auth_method, refresh_ciphertext, token_expires_at FROM cloudflare_connections WHERE account_id = ?")
+    .bind(accountId).first<CloudflareConnection>();
+}
 
 function base64url(bytes: Uint8Array) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -34,6 +43,40 @@ export async function decryptToken(value: string, purpose: "cloudflare" | "mcp" 
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64url(iv) }, await key(purpose, secret), fromBase64url(data));
     return new TextDecoder().decode(plain);
   } catch { throw new CloudflareError(503, purpose === "mcp" ? "MCP connection needs to be reconnected" : "Cloudflare connection needs to be reconnected"); }
+}
+
+export async function cloudflareToken(db: typeof env.DB, connection: CloudflareConnection): Promise<string> {
+  if (connection.auth_method === "token") return decryptToken(connection.token_ciphertext);
+  if (connection.token_expires_at && connection.token_expires_at > Date.now() + 60_000)
+    return decryptToken(connection.token_ciphertext);
+  const clientId = process.env.CLOUDFLARE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.CLOUDFLARE_OAUTH_CLIENT_SECRET;
+  if (!clientId || !clientSecret || !connection.refresh_ciphertext)
+    throw new CloudflareError(503, "Cloudflare OAuth connection needs to be reconnected");
+  const refreshToken = await decryptToken(connection.refresh_ciphertext);
+  const response = await fetch("https://dash.cloudflare.com/oauth2/token", {
+    method: "POST", headers: { Authorization: `Basic ${btoa(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`)}`,
+      "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token",
+      refresh_token: refreshToken }), cache: "no-store",
+  });
+  const payload = await response.json().catch(() => null) as { access_token?: string;
+    refresh_token?: string; expires_in?: number } | null;
+  if (!response.ok || !payload?.access_token ||
+    !Number.isFinite(payload.expires_in) || payload.expires_in! <= 0) {
+    const latest = await connectionFor(db, connection.account_id);
+    if (latest?.auth_method === "oauth" && latest.token_ciphertext !== connection.token_ciphertext)
+      return cloudflareToken(db, latest);
+    throw new CloudflareError(503, "Cloudflare OAuth connection needs to be reconnected");
+  }
+  const changed = await db.prepare("UPDATE cloudflare_connections SET token_ciphertext = ?, refresh_ciphertext = ?, token_expires_at = ? WHERE account_id = ? AND token_ciphertext = ? AND auth_method = 'oauth'")
+    .bind(await encryptToken(payload.access_token), await encryptToken(payload.refresh_token || refreshToken),
+      Date.now() + payload.expires_in! * 1000, connection.account_id, connection.token_ciphertext).run();
+  if (changed.meta.changes === 1) return payload.access_token;
+  const latest = await connectionFor(db, connection.account_id);
+  if (!latest || latest.auth_method !== "oauth" || latest.token_ciphertext === connection.token_ciphertext)
+    throw new CloudflareError(503, "Cloudflare connection changed; retry");
+  return cloudflareToken(db, latest);
 }
 
 export async function cloudflare<T>(token: string, path: string, method = "GET", body?: unknown): Promise<T> {

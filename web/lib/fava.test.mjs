@@ -6,7 +6,7 @@ import { createHmac, generateKeyPairSync, verify } from "node:crypto";
 import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
-import { encryptToken } from "./fava-cloudflare.ts";
+import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -62,6 +62,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0009_implementation_sha.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0010_run_publication_fence.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0011_server_sessions.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0012_cloudflare_oauth.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -760,7 +761,7 @@ test("successful Worker Preview is attached only to the matching implementation 
     sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, completed_at, implementation_branch, implementation_sha, pull_number) VALUES (?, ?, ?, 'gpt-6-sol', 'openai', 'succeeded', 1, ?, ?, ?, 8)")
       .run(runId, specId, "a".repeat(40), Date.now(), `impl/${runId}`, sha);
     const token = await encryptToken("cloudflare-test-token");
-    sqlite.prepare("INSERT INTO cloudflare_connections VALUES (?, ?, ?, 1)").run(account, "c".repeat(32), token);
+    sqlite.prepare("INSERT INTO cloudflare_connections (account_id, cloudflare_account_id, token_ciphertext, connected_at) VALUES (?, ?, ?, 1)").run(account, "c".repeat(32), token);
     sqlite.prepare("INSERT INTO cloudflare_project_previews VALUES (?, ?, 'worker', 'tag', 'trigger', 1)")
       .run(project.id, account);
     let calls = 0;
@@ -789,6 +790,38 @@ test("successful Worker Preview is attached only to the matching implementation 
     globalThis.fetch = originalFetch;
     if (originalSecret === undefined) delete process.env.FAVA_SESSION_SECRET;
     else process.env.FAVA_SESSION_SECRET = originalSecret;
+    sqlite.close();
+  }
+});
+
+test("Cloudflare OAuth refresh rotates encrypted credentials before expiry", async () => {
+  const { db, sqlite } = testDb();
+  const previous = { fetch: globalThis.fetch, secret: process.env.FAVA_SESSION_SECRET,
+    clientId: process.env.CLOUDFLARE_OAUTH_CLIENT_ID,
+    clientSecret: process.env.CLOUDFLARE_OAUTH_CLIENT_SECRET };
+  process.env.FAVA_SESSION_SECRET = "a-secure-example-secret-with-more-than-32-characters";
+  process.env.CLOUDFLARE_OAUTH_CLIENT_ID = "test-client";
+  process.env.CLOUDFLARE_OAUTH_CLIENT_SECRET = "test-secret";
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1)");
+    sqlite.prepare("INSERT INTO cloudflare_connections (account_id, cloudflare_account_id, token_ciphertext, connected_at, auth_method, refresh_ciphertext, token_expires_at) VALUES ('a', ?, ?, 1, 'oauth', ?, 1)")
+      .run("c".repeat(32), await encryptToken("expired"), await encryptToken("old-refresh"));
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "https://dash.cloudflare.com/oauth2/token");
+      assert.equal(new URLSearchParams(init.body).get("refresh_token"), "old-refresh");
+      return Response.json({ access_token: "renewed-access", refresh_token: "renewed-refresh", expires_in: 3600 });
+    };
+    const connection = { ...sqlite.prepare("SELECT * FROM cloudflare_connections").get() };
+    assert.equal(await cloudflareToken(db, connection), "renewed-access");
+    const updated = sqlite.prepare("SELECT * FROM cloudflare_connections").get();
+    assert.equal(await decryptToken(updated.refresh_ciphertext), "renewed-refresh");
+    assert.ok(updated.token_expires_at > Date.now() + 3500_000);
+  } finally {
+    globalThis.fetch = previous.fetch;
+    for (const [key, value] of [["FAVA_SESSION_SECRET", previous.secret],
+      ["CLOUDFLARE_OAUTH_CLIENT_ID", previous.clientId],
+      ["CLOUDFLARE_OAUTH_CLIENT_SECRET", previous.clientSecret]])
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
     sqlite.close();
   }
 });

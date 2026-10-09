@@ -4,10 +4,9 @@ import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
-import { cloudflare, CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type BuildTrigger, type PreviewBuild } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, cloudflareToken, connectionFor, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, wranglerConfigPaths, type BuildTrigger, type PreviewBuild, type CloudflareConnection } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
-type Connection = { cloudflare_account_id: string; token_ciphertext: string };
 
 function errorResponse(error: unknown) {
   const status = error instanceof CloudflareError || error instanceof GitHubError ? error.status : 502;
@@ -15,13 +14,8 @@ function errorResponse(error: unknown) {
     { status: status >= 400 && status < 600 ? status : 502 });
 }
 
-async function connectionFor(accountId: string) {
-  return env.DB.prepare("SELECT cloudflare_account_id, token_ciphertext FROM cloudflare_connections WHERE account_id = ?")
-    .bind(accountId).first<Connection>();
-}
-
-async function workersFor(connection: Connection) {
-  const token = await decryptToken(connection.token_ciphertext);
+async function workersFor(connection: CloudflareConnection) {
+  const token = await cloudflareToken(env.DB, connection);
   const workers = await cloudflare<Worker[]>(token,
     `/accounts/${connection.cloudflare_account_id}/workers/scripts`);
   return { token, workers };
@@ -47,10 +41,10 @@ export async function GET(request: NextRequest) {
     const repository = request.nextUrl.searchParams.get("repo") || "";
     const project = await projectAccess(env.DB, auth.session.user.id, repository, auth.session.token);
     const canManage = project.role === "owner" || project.role === "admin";
-    const connection = await connectionFor(project.accountId);
+    const connection = await connectionFor(env.DB, project.accountId);
     const preview = await env.DB.prepare("SELECT worker_name AS workerName, worker_tag AS workerTag, trigger_uuid AS triggerUuid FROM cloudflare_project_previews WHERE project_id = ? AND account_id = ?")
       .bind(project.id, project.accountId).first<{ workerName: string; workerTag: string; triggerUuid: string }>();
-    const token = connection ? await decryptToken(connection.token_ciphertext) : "";
+    const token = connection ? await cloudflareToken(env.DB, connection) : "";
     const available = connection && canManage
       ? await cloudflare<Worker[]>(token, `/accounts/${connection.cloudflare_account_id}/workers/scripts`)
       : [];
@@ -70,6 +64,8 @@ export async function GET(request: NextRequest) {
       }));
     }
     const response = NextResponse.json({ connected: Boolean(connection), canManage,
+      oauthAvailable: Boolean(process.env.CLOUDFLARE_OAUTH_CLIENT_ID && process.env.CLOUDFLARE_OAUTH_CLIENT_SECRET),
+      authMethod: canManage ? connection?.auth_method || null : null,
       accountId: canManage ? connection?.cloudflare_account_id || null : null, workers,
       preview: canManage || !preview ? preview : { workerName: preview.workerName }, builds });
     if (auth.refreshed) await setSession(response, request, auth.session);
@@ -95,8 +91,8 @@ export async function POST(request: NextRequest) {
         throw new CloudflareError(400, "Enter a valid Cloudflare account ID and user API token");
       await cloudflare<Worker[]>(body.token, `/accounts/${body.cloudflareAccountId}/workers/scripts`);
       await cloudflare(body.token, `/accounts/${body.cloudflareAccountId}/builds/tokens`);
-      const current = await connectionFor(accountId);
-      const save = env.DB.prepare("INSERT INTO cloudflare_connections (account_id, cloudflare_account_id, token_ciphertext, connected_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET cloudflare_account_id = excluded.cloudflare_account_id, token_ciphertext = excluded.token_ciphertext, connected_at = excluded.connected_at")
+      const current = await connectionFor(env.DB, accountId);
+      const save = env.DB.prepare("INSERT INTO cloudflare_connections (account_id, cloudflare_account_id, token_ciphertext, connected_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET cloudflare_account_id = excluded.cloudflare_account_id, token_ciphertext = excluded.token_ciphertext, auth_method = 'token', refresh_ciphertext = NULL, token_expires_at = NULL, connected_at = excluded.connected_at")
         .bind(accountId, body.cloudflareAccountId, await encryptToken(body.token), Date.now());
       if (current && current.cloudflare_account_id !== body.cloudflareAccountId)
         await env.DB.batch([env.DB.prepare("DELETE FROM cloudflare_project_previews WHERE account_id = ?").bind(accountId), save]);
@@ -108,7 +104,7 @@ export async function POST(request: NextRequest) {
     if (body.action !== "enable" || !("repo" in body) || typeof body.repo !== "string" ||
       !("workerName" in body) || typeof body.workerName !== "string")
       throw new CloudflareError(400, "Choose a Worker to enable Previews");
-    const connection = await connectionFor(accountId);
+    const connection = await connectionFor(env.DB, accountId);
     if (!connection) throw new CloudflareError(400, "Connect Cloudflare first");
     const { token, workers } = await workersFor(connection);
     const worker = workers.find(item => item.id === body.workerName);
