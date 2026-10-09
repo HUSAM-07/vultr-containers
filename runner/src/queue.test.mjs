@@ -46,7 +46,7 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
   try {
     globalThis.fetch = async (url, options) => {
       const path = new URL(url).pathname;
-      if (path.endsWith("/compat/chat/completions")) return Response.json({ choices: [{ message: {
+      if (path.endsWith("/ai/v1/chat/completions")) return Response.json({ choices: [{ message: {
         content: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Code changed for the requested criterion"] }) } }] });
       if (path === "/app/installations/7/access_tokens") return Response.json({ token: "publisher" });
       if (path.endsWith(`/git/ref/heads/impl/${runId}`)) return new Response(null, { status: 404 });
@@ -131,7 +131,7 @@ test("spec review rejects unrelated changes before GitHub publication", async ()
   const original = globalThis.fetch;
   try {
     globalThis.fetch = async (url) => {
-      assert.equal(new URL(url).pathname.endsWith("/compat/chat/completions"), true);
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
       return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false, unmet: [],
         unrelated: ["Billing file is outside the export spec"], evidence: [] }) } }] });
     };
@@ -153,7 +153,7 @@ test("publication retries reuse the review for the same diff", async () => {
   try {
     console.error = () => {};
     globalThis.fetch = async (url) => {
-      if (new URL(url).pathname.endsWith("/compat/chat/completions")) {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions")) {
         reviews++;
         return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
           unrelated: [], evidence: ["Requested code change"] }) } }] });
@@ -175,7 +175,7 @@ test("a nonretryable review error fails the run without opening a pull request",
   const original = globalThis.fetch;
   try {
     globalThis.fetch = async (url) => {
-      assert.equal(new URL(url).pathname.endsWith("/compat/chat/completions"), true);
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
       return new Response("Invalid gateway credential", { status: 401 });
     };
     await dispatch(env);
@@ -245,7 +245,7 @@ test("member cancellation stops a running agent and prevents a late implementati
     await dispatch(env);
     setTask({ state: "succeeded", result: "Completed" });
     globalThis.fetch = async url => {
-      if (new URL(url).pathname.endsWith("/compat/chat/completions")) {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions")) {
         sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'Cancellation requested by project member', completed_at = 2 WHERE id = ?")
           .run(runId);
         return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],

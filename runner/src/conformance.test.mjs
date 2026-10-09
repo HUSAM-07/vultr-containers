@@ -11,8 +11,10 @@ test("spec review sends the full spec and diff and rejects inconsistent verdicts
   const diff = "diff --git a/export.ts b/export.ts\n+exportVisibleRows();";
   try {
     globalThis.fetch = async (url, options) => {
-      assert.equal(String(url), "https://gateway.ai.cloudflare.com/v1/account/default/compat/chat/completions");
-      assert.equal(options.headers["cf-aig-authorization"], "Bearer gateway-token");
+      assert.equal(String(url), "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions");
+      assert.equal(options.headers.Authorization, "Bearer gateway-token");
+      assert.equal(options.headers["cf-aig-gateway-id"], "default");
+      assert.equal(options.headers["cf-aig-authorization"], undefined);
       const body = JSON.parse(options.body);
       assert.equal(body.model, "openai/gpt-6-sol");
       assert.match(body.messages[1].content, /Export visible rows/);
