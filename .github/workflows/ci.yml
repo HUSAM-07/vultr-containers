@@ -26,6 +26,18 @@ jobs:
       - run: npm run typecheck --prefix web
       - run: npm run typecheck --prefix runner
       - run: npm run build:vinext --prefix web -- --logLevel=error
+      - name: Verify native Worker bindings
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const root = 'web/.cloudflare/output/v0/workers/default/bundle/';
+          const manifest = JSON.parse(readFileSync(root + '.vite/manifest.json', 'utf8'));
+          const route = manifest['app/api/github/route.ts']?.file;
+          assert(route, 'GitHub API route missing from Worker build');
+          assert(/from["']cloudflare:workers["']/.test(readFileSync(root + route, 'utf8')),
+            'GitHub API route must import native Cloudflare bindings');
+          NODE
       - run: |
           # Docker Hub can time out while resolving Cloudflare's sandbox-shim image.
           for attempt in 1 2 3; do
