@@ -12,10 +12,15 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0004_run_started_at.sql").read_text())
         db.executescript(Path(__file__).with_name("0005_worker_previews.sql").read_text())
         db.executescript(Path(__file__).with_name("0006_run_skills.sql").read_text())
+        db.executescript(Path(__file__).with_name("0007_unique_project_repository.sql").read_text())
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")
         db.execute("INSERT INTO accounts VALUES ('a', 'Team', 1, 1)")
         db.execute("INSERT INTO account_memberships VALUES ('a', 1, 'owner')")
         db.execute("INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 8, 'main', 1)")
+        db.execute("INSERT INTO users VALUES (2, 'another', '', 1)")
+        db.execute("INSERT INTO accounts VALUES ('b', 'Other', 2, 1)")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO projects VALUES ('duplicate-repo', 'b', 42, 'owner/repo', 8, 'main', 1)")
         db.execute("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES ('s', 'p', 'specs/a.md', 'spec/a', 3, 'merged', 'abc', 1, 1, 'openai', 'gpt-6-sol')")
         db.execute("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES ('r', 's', 'abc', 'model', 'provider', 'queued', 1)")
         with self.assertRaises(sqlite3.IntegrityError):

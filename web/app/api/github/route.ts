@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
-import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec } from "@/lib/fava-db";
+import { ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
 import { GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
@@ -26,12 +26,16 @@ export async function GET(request: NextRequest) {
     }
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repo = request.nextUrl.searchParams.get("repo") || "";
-    const value = action === "repos" ? await listRepositories(auth.session.token)
-      : action === "projects" ? await listProjects(env.DB, `github:${auth.session.user.id}`)
-      : action === "runs" ? await listRuns(env.DB, `github:${auth.session.user.id}`, parseRepo(repo))
-      : action === "context" ? await importContext(auth.session.token, repo)
-      : action === "specs" ? await listSpecPullRequests(auth.session.token, repo)
-      : null;
+    let value: unknown = null;
+    if (action === "repos") value = await listRepositories(auth.session.token);
+    else if (action === "projects") value = await listProjects(env.DB, auth.session.user.id,
+      await listRepositories(auth.session.token));
+    else if (["runs", "context", "specs"].includes(action)) {
+      const project = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token);
+      value = action === "runs" ? await listRuns(env.DB, project.accountId, project.repository)
+        : action === "context" ? await importContext(auth.session.token, project.repository)
+        : await listSpecPullRequests(auth.session.token, project.repository);
+    }
     if (!value) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const response = NextResponse.json(value);
     if (auth.refreshed) await setSession(response, request, auth.session);
@@ -77,9 +81,7 @@ export async function POST(request: NextRequest) {
     let selected: ReturnType<typeof chooseModel>;
     try { selected = chooseModel(model); }
     catch { throw new GitHubError(400, "Choose a supported agent model"); }
-    const linked = await env.DB.prepare("SELECT id FROM projects WHERE account_id = ? AND full_name = ?")
-      .bind(`github:${auth.session.user.id}`, parseRepo(repo)).first<{ id: string }>();
-    if (!linked) throw new GitHubError(403, "Link this repository to your Fava account first");
+    const linked = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token, "editor");
     const result = await publishSpec(auth.session.token, repo, title, content);
     try { await recordSpec(env.DB, linked.id, auth.session.user.id, result, selected); }
     catch { throw new GitHubError(502, `Spec PR ${result.url} was created, but Fava could not track it. Contact the project owner before merging.`); }

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
-import { github, GitHubError, parseRepo } from "@/lib/fava-github";
+import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
+import { projectAccess } from "@/lib/fava-db";
 import { cloudflare, CloudflareError, decryptToken, encryptToken, recentPreviewBuilds, verifyPreviewConfig, type PreviewBuild } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
@@ -17,16 +18,9 @@ function errorResponse(error: unknown) {
     { status: status >= 400 && status < 600 ? status : 502 });
 }
 
-async function projectFor(userId: number, repository: string) {
-  const project = await env.DB.prepare("SELECT id, github_repo_id AS githubRepoId, default_branch AS defaultBranch FROM projects WHERE account_id = ? AND full_name = ?")
-    .bind(`github:${userId}`, parseRepo(repository)).first<{ id: string; githubRepoId: number; defaultBranch: string }>();
-  if (!project) throw new CloudflareError(403, "Link this repository to Fava before configuring Cloudflare");
-  return project;
-}
-
-async function connectionFor(userId: number) {
+async function connectionFor(accountId: string) {
   return env.DB.prepare("SELECT cloudflare_account_id, token_ciphertext FROM cloudflare_connections WHERE account_id = ?")
-    .bind(`github:${userId}`).first<Connection>();
+    .bind(accountId).first<Connection>();
 }
 
 async function workersFor(connection: Connection) {
@@ -54,10 +48,10 @@ export async function GET(request: NextRequest) {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repository = request.nextUrl.searchParams.get("repo") || "";
-    const project = await projectFor(auth.session.user.id, repository);
-    const connection = await connectionFor(auth.session.user.id);
+    const project = await projectAccess(env.DB, auth.session.user.id, repository, auth.session.token, "admin");
+    const connection = await connectionFor(project.accountId);
     const preview = await env.DB.prepare("SELECT worker_name AS workerName, worker_tag AS workerTag, trigger_uuid AS triggerUuid FROM cloudflare_project_previews WHERE project_id = ? AND account_id = ?")
-      .bind(project.id, `github:${auth.session.user.id}`).first<{ workerName: string; workerTag: string; triggerUuid: string }>();
+      .bind(project.id, project.accountId).first<{ workerName: string; workerTag: string; triggerUuid: string }>();
     const { token, workers: available } = connection ? await workersFor(connection) : { token: "", workers: [] as Worker[] };
     const workers = available.map(worker => ({ name: worker.id, tag: worker.tag }));
     let builds: ReturnType<typeof recentPreviewBuilds> = [];
@@ -89,16 +83,17 @@ export async function POST(request: NextRequest) {
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const body = await readJson(request, 2_000);
     if (!body || typeof body !== "object" || !("action" in body)) throw new CloudflareError(400, "Invalid Cloudflare request");
-    const accountId = `github:${auth.session.user.id}`;
+    const project = await projectAccess(env.DB, auth.session.user.id,
+      "repo" in body && typeof body.repo === "string" ? body.repo : "", auth.session.token, "admin");
+    const accountId = project.accountId;
     if (body.action === "connect") {
       if (!("cloudflareAccountId" in body) || !("token" in body) ||
         typeof body.cloudflareAccountId !== "string" || !/^[a-f0-9]{32}$/i.test(body.cloudflareAccountId) ||
         typeof body.token !== "string" || body.token.length < 20 || body.token.length > 512 || /\s/.test(body.token))
         throw new CloudflareError(400, "Enter a valid Cloudflare account ID and user API token");
-      await projectFor(auth.session.user.id, "repo" in body && typeof body.repo === "string" ? body.repo : "");
       await cloudflare<Worker[]>(body.token, `/accounts/${body.cloudflareAccountId}/workers/scripts`);
       await cloudflare(body.token, `/accounts/${body.cloudflareAccountId}/builds/tokens`);
-      const current = await connectionFor(auth.session.user.id);
+      const current = await connectionFor(accountId);
       const save = env.DB.prepare("INSERT INTO cloudflare_connections (account_id, cloudflare_account_id, token_ciphertext, connected_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET cloudflare_account_id = excluded.cloudflare_account_id, token_ciphertext = excluded.token_ciphertext, connected_at = excluded.connected_at")
         .bind(accountId, body.cloudflareAccountId, await encryptToken(body.token), Date.now());
       if (current && current.cloudflare_account_id !== body.cloudflareAccountId)
@@ -111,8 +106,7 @@ export async function POST(request: NextRequest) {
     if (body.action !== "enable" || !("repo" in body) || typeof body.repo !== "string" ||
       !("workerName" in body) || typeof body.workerName !== "string")
       throw new CloudflareError(400, "Choose a Worker to enable Previews");
-    const project = await projectFor(auth.session.user.id, body.repo);
-    const connection = await connectionFor(auth.session.user.id);
+    const connection = await connectionFor(accountId);
     if (!connection) throw new CloudflareError(400, "Connect Cloudflare first");
     const { token, workers } = await workersFor(connection);
     const worker = workers.find(item => item.id === body.workerName);
@@ -170,8 +164,10 @@ export async function DELETE(request: NextRequest) {
   try {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
+    const project = await projectAccess(env.DB, auth.session.user.id,
+      request.nextUrl.searchParams.get("repo") || "", auth.session.token, "admin");
     await env.DB.prepare("DELETE FROM cloudflare_connections WHERE account_id = ?")
-      .bind(`github:${auth.session.user.id}`).run();
+      .bind(project.accountId).run();
     const response = NextResponse.json({ connected: false });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;

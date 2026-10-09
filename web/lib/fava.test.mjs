@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
-import { ensurePersonalAccount, linkProject, listProjects, listRuns, recordSpec } from "./fava-db.ts";
+import { ensurePersonalAccount, linkProject, listProjectMembers, listProjects, listRuns,
+  projectAccess, recordSpec, removeProjectMember, setProjectMember } from "./fava-db.ts";
 import { importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
@@ -19,6 +20,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0003_run_output.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0004_run_started_at.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0006_run_skills.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0007_unique_project_repository.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -127,14 +129,54 @@ test("GitHub identity creates one personal account and links a repository once",
     const first = await linkProject(db, account, repo);
     const second = await linkProject(db, account, repo);
     assert.equal(first.id, second.id);
-    assert.deepEqual(await listProjects(db, account), [{ id: first.id, repository: "owner/repo", defaultBranch: "main" }]);
-    assert.deepEqual(await listProjects(db, "github:2"), []);
+    assert.deepEqual(await listProjects(db, 1, [repo]), [{ id: first.id, repository: "owner/repo", defaultBranch: "main", role: "owner", accountRole: "owner" }]);
+    assert.deepEqual(await listProjects(db, 2, [repo]), []);
+    await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
+    await assert.rejects(linkProject(db, "github:2", repo), /already belongs/);
     await recordSpec(db, first.id, 1, { number: 4, path: "specs/export-123.md", branch: "spec/export-123" },
       chooseModel("gpt-6-sol"));
     assert.deepEqual({ ...sqlite.prepare("SELECT status, provider, model FROM specs WHERE project_id = ? AND pull_number = 4").get(first.id) },
       { status: "open", provider: "openai", model: "gpt-6-sol" });
     await ensurePersonalAccount(db, { id: 1, login: "renamed", avatarUrl: "" });
     assert.equal(sqlite.prepare("SELECT login FROM users WHERE github_id = 1").get().login, "renamed");
+  } finally { sqlite.close(); }
+});
+
+test("project membership grants only its role and still requires the same GitHub repository", async () => {
+  const { sqlite, db } = testDb();
+  const original = globalThis.fetch;
+  try {
+    const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
+    const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
+    const project = await linkProject(db, account, repo);
+    sqlite.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, 2, 'viewer')").run(project.id);
+    globalThis.fetch = async () => Response.json({ id: 42 });
+    assert.deepEqual(await listProjects(db, 2, [repo]), [{ id: project.id, repository: repo.fullName,
+      defaultBranch: "main", role: "viewer", accountRole: null }]);
+    assert.equal((await projectAccess(db, 2, repo.fullName, "member-token")).id, project.id);
+    await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token", "editor"), /do not have access/);
+    sqlite.prepare("UPDATE project_memberships SET role = 'editor' WHERE project_id = ? AND github_id = 2").run(project.id);
+    assert.equal((await projectAccess(db, 2, repo.fullName, "member-token", "editor")).role, "editor");
+    globalThis.fetch = async () => Response.json({ id: 43 });
+    await assert.rejects(projectAccess(db, 2, repo.fullName, "member-token"), /identity changed/);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("project administrators can add, change, and remove signed-in members", async () => {
+  const { sqlite, db } = testDb();
+  try {
+    const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
+    await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
+    const project = await linkProject(db, account,
+      { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
+    await assert.rejects(setProjectMember(db, project.id, "unknown", "viewer"), /sign in/);
+    assert.equal(await setProjectMember(db, project.id, "MEMBER", "viewer"), 2);
+    assert.deepEqual(await listProjectMembers(db, project.id), [{ githubId: 2, login: "member", role: "viewer" }]);
+    await setProjectMember(db, project.id, "member", "editor");
+    assert.equal((await listProjectMembers(db, project.id))[0].role, "editor");
+    await removeProjectMember(db, project.id, 2);
+    assert.deepEqual(await listProjectMembers(db, project.id), []);
   } finally { sqlite.close(); }
 });
 

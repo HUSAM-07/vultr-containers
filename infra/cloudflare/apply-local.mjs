@@ -91,3 +91,13 @@ if (runSkillTable) {
   if (!installed) throw Error("Local run-skills migration verification failed");
   console.log("Local run-skills migration applied");
 }
+
+const uniqueRepo = (await query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'projects_github_repo_unique'")).rows.length > 0;
+if (uniqueRepo) {
+  console.log("Local project identity migration is already applied");
+} else {
+  await query(await readFile(new URL("./0007_unique_project_repository.sql", import.meta.url), "utf8"));
+  const installed = (await query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'projects_github_repo_unique'")).rows.length > 0;
+  if (!installed) throw Error("Local project identity migration verification failed");
+  console.log("Local project identity migration applied");
+}

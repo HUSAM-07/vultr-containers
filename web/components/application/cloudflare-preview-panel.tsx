@@ -41,7 +41,8 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
   async function act(action: "connect" | "enable" | "disconnect") {
     setBusy(true); setError("");
     try {
-      await request("/api/cloudflare", action === "disconnect" ? { method: "DELETE" } : {
+      await request(action === "disconnect" ? `/api/cloudflare?repo=${encodeURIComponent(repository)}` : "/api/cloudflare",
+        action === "disconnect" ? { method: "DELETE" } : {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, repo: repository, cloudflareAccountId: accountId.trim(), token: token.trim(), workerName }),
       });
@@ -58,7 +59,7 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
     {!state?.connected ? <div className="mt-4 grid gap-3">
       <Input label="Cloudflare account ID" value={accountId} onChange={setAccountId} placeholder="32-character account ID" />
       <Input label="User API token" type="password" value={token} onChange={setToken} placeholder="Workers Builds Configuration: Edit" />
-      <p className="text-caption-1-regular text-text-tertiary">Use a user-scoped token with Workers Scripts Read and Workers Builds Configuration Edit. Fava encrypts it before storing it.</p>
+      <p className="text-caption-1-regular text-text-tertiary">Use a user-scoped token with Workers Scripts Read and Workers Builds Configuration Edit. Fava encrypts it for this workspace; its project administrators can use this connection.</p>
       <Button size="small" disabled={busy || !accountId || !token} onClick={() => void act("connect")}>Connect Cloudflare</Button>
       <a className="inline-flex items-center gap-1 text-caption-1-semibold text-accent-600 hover:underline" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Create an API token <RiExternalLinkLine className="size-4" aria-hidden /></a>
     </div> : <div className="mt-4 grid gap-3">

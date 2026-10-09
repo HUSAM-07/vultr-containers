@@ -3,13 +3,7 @@ import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError, listRepositories, listSkillFiles, parseRepo, readSkillFile, validSkillPath } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
-
-async function projectFor(userId: number, repository: string) {
-  const project = await env.DB.prepare("SELECT id, github_repo_id AS githubRepoId, default_branch AS defaultBranch FROM projects WHERE account_id = ? AND full_name = ?")
-    .bind(`github:${userId}`, parseRepo(repository)).first<{ id: string; githubRepoId: number; defaultBranch: string }>();
-  if (!project) throw new GitHubError(403, "Link this repository before selecting skills");
-  return project;
-}
+import { projectAccess } from "@/lib/fava-db";
 
 function fail(error: unknown) {
   return NextResponse.json({ error: error instanceof GitHubError ? error.message : "Skill library is unavailable" },
@@ -21,11 +15,11 @@ export async function GET(request: NextRequest) {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
     const repository = request.nextUrl.searchParams.get("repo") || "";
-    const project = await projectFor(auth.session.user.id, repository);
+    const project = await projectAccess(env.DB, auth.session.user.id, repository, auth.session.token);
     const [available, selected] = await Promise.all([
       listSkillFiles(auth.session.token, repository, project.defaultBranch),
       env.DB.prepare("SELECT skills.id, skills.path, skills.commit_sha AS commitSha, skills.project_id AS projectId, source.full_name AS sourceRepository FROM skills JOIN projects AS source ON source.account_id = skills.account_id AND source.github_repo_id = skills.source_repo_id WHERE skills.account_id = ? AND skills.active = 1 AND (skills.project_id IS NULL OR skills.project_id = ?) ORDER BY skills.project_id IS NULL DESC, skills.path")
-        .bind(`github:${auth.session.user.id}`, project.id)
+        .bind(project.accountId, project.id)
         .all<{ id: string; path: string; commitSha: string; projectId: string | null; sourceRepository: string }>(),
     ]);
     const response = NextResponse.json({ available, selected: selected.results });
@@ -43,17 +37,25 @@ export async function POST(request: NextRequest) {
     const body = await readJson(request, 2_000);
     if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string" ||
       !("action" in body) || typeof body.action !== "string") throw new GitHubError(400, "Invalid skill request");
-    const project = await projectFor(auth.session.user.id, body.repo);
-    const accountId = `github:${auth.session.user.id}`;
+    const project = await projectAccess(env.DB, auth.session.user.id, body.repo, auth.session.token, "editor");
+    const accountId = project.accountId;
+    const canManageWorkspace = project.accountRole === "owner" || project.accountRole === "admin";
     if (body.action === "remove") {
       if (!("id" in body) || typeof body.id !== "string" || !/^[a-f0-9-]{36}$/i.test(body.id))
         throw new GitHubError(400, "Choose a selected skill");
-      await env.DB.prepare("UPDATE skills SET active = 0 WHERE id = ? AND account_id = ? AND (project_id IS NULL OR project_id = ?)")
-        .bind(body.id, accountId, project.id).run();
+      const skill = await env.DB.prepare("SELECT project_id AS projectId FROM skills WHERE id = ? AND account_id = ?")
+        .bind(body.id, accountId).first<{ projectId: string | null }>();
+      if (!skill || skill.projectId && skill.projectId !== project.id ||
+        skill.projectId === null && !canManageWorkspace)
+        throw new GitHubError(403, "You cannot remove this skill");
+      await env.DB.prepare("UPDATE skills SET active = 0 WHERE id = ? AND account_id = ?")
+        .bind(body.id, accountId).run();
     } else if (body.action === "add") {
       if (!("path" in body) || typeof body.path !== "string" || !validSkillPath(body.path) ||
         !("scope" in body) || (body.scope !== "project" && body.scope !== "workspace"))
         throw new GitHubError(400, "Choose a valid skill and scope");
+      if (body.scope === "workspace" && !canManageWorkspace)
+        throw new GitHubError(403, "Only workspace administrators can add shared skills");
       const name = body.repo;
       const repository = (await listRepositories(auth.session.token)).find(item =>
         item.fullName.toLowerCase() === name.toLowerCase() && item.id === project.githubRepoId);
