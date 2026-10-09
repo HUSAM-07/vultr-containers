@@ -1,6 +1,7 @@
 import { chooseModel } from "../../web/lib/fava-models.ts";
 import { publishImplementation } from "./publish.ts";
 import { loadRunSkills } from "./skills.ts";
+import { parseConformanceReport, ReviewError, reviewConformance } from "./conformance.ts";
 import type { AgentSandbox } from "./sandbox";
 import type { Env, RunJob } from "./types";
 
@@ -54,6 +55,33 @@ export async function reconcile(env: Env) {
       const diff = await sandbox.diff();
       if (!diff.trim()) { await fail(env, id, "Agent completed without code changes", prefix); continue; }
       await env.ARTIFACTS.put(`${prefix}/diff.patch`, diff, { httpMetadata: { contentType: "text/x-diff; charset=utf-8" } });
+      const diffHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(diff))),
+        byte => byte.toString(16).padStart(2, "0")).join("");
+      let review;
+      try {
+        const savedReview = await env.ARTIFACTS.get(`${prefix}/review.json`);
+        let cached: { diffSha256?: string } | null = null;
+        if (savedReview) {
+          try {
+            const parsed = JSON.parse(await savedReview.text());
+            if (!parsed || typeof parsed !== "object") throw Error("Invalid report");
+            cached = parsed as { diffSha256?: string };
+          }
+          catch { throw new ReviewError("Saved spec review is invalid"); }
+        }
+        if (cached && cached.diffSha256 !== diffHash) throw new ReviewError("Spec review source changed after the first review");
+        review = cached ? parseConformanceReport(cached) : await reviewConformance(env, run, await sandbox.spec(), diff);
+        if (!cached) await env.ARTIFACTS.put(`${prefix}/review.json`, JSON.stringify({ ...review, diffSha256: diffHash }),
+          { httpMetadata: { contentType: "application/json; charset=utf-8" } });
+      } catch (error) {
+        if (!(error instanceof ReviewError)) throw error;
+        await fail(env, id, `Spec review could not run: ${error.message}`, prefix);
+        continue;
+      }
+      if (!review.pass) {
+        await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
+        continue;
+      }
       const published = await publishImplementation(env, run, await sandbox.changes(), status.result);
       await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
         .bind(status.result.slice(0, 2000), prefix, published.branch, published.pullNumber, Date.now(), id).run();

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
 
-const names = { diff: "diff.patch", stdout: "stdout.log", stderr: "stderr.log" } as const;
+const names = { diff: "diff.patch", review: "review.json", stdout: "stdout.log", stderr: "stderr.log" } as const;
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
   const object = await env.ARTIFACTS.get(`${run.artifactKey}/${names[kind as keyof typeof names]}`);
   if (!object) return NextResponse.json({ error: "Artifact not found" }, { status: 404 });
   const response = new NextResponse(object.body, { headers: {
-    "Content-Type": kind === "diff" ? "text/x-diff; charset=utf-8" : "text/plain; charset=utf-8",
+    "Content-Type": kind === "diff" ? "text/x-diff; charset=utf-8" : kind === "review" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
     "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
   } });
   if (auth.refreshed) await setSession(response, request, auth.session);

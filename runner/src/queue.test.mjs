@@ -24,6 +24,7 @@ function fixture() {
   const sandbox = { async start(job) { starts.push(job); return "started"; },
     async status() { return task; }, async logs() { return { stdout: "agent events", stderr: "" }; },
     async diff() { return "diff --git a/a b/a\n+new code\n"; },
+    async spec() { return "## Outcome\n\nBuild requested change.\n\n## Acceptance criteria\n\n- Add new code."; },
     async changes() { return [{ path: "a", mode: "100644", content: "bmV3IGNvZGU=" }]; },
     async stop() { stopped = true; } };
   const env = { DB: { prepare(sql) { let values = [];
@@ -31,8 +32,9 @@ function fixture() {
       async all() { return { results: sqlite.prepare(sql).all(...values).map(row => ({ ...row })) }; },
       async run() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; } }; } },
     SANDBOX: { getByName(id) { assert.equal(id, runId); return sandbox; } },
-    ARTIFACTS: { async put(key, body) { writes.set(key, body); } },
-    AI_GATEWAY_TOKEN: "gateway-token", GITHUB_APP_CLIENT_ID: "Iv1.test",
+    ARTIFACTS: { async put(key, body) { writes.set(key, body); },
+      async get(key) { const value = writes.get(key); return value === undefined ? null : { async text() { return value; } }; } },
+    AI_GATEWAY_ACCOUNT_ID: "account", AI_GATEWAY_ID: "default", AI_GATEWAY_TOKEN: "gateway-token", GITHUB_APP_CLIENT_ID: "Iv1.test",
     GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }),
     FAVA_RUN_SECRET: "s".repeat(40) };
   return { sqlite, env, starts, writes, setTask(value) { task = value; }, wasStopped() { return stopped; } };
@@ -44,6 +46,8 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
   try {
     globalThis.fetch = async (url, options) => {
       const path = new URL(url).pathname;
+      if (path.endsWith("/compat/chat/completions")) return Response.json({ choices: [{ message: {
+        content: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Code changed for the requested criterion"] }) } }] });
       if (path === "/app/installations/7/access_tokens") return Response.json({ token: "publisher" });
       if (path.endsWith(`/git/ref/heads/impl/${runId}`)) return new Response(null, { status: 404 });
       if (path.endsWith(`/git/commits/${"a".repeat(40)}`)) return Response.json({ tree: { sha: "b".repeat(40) } });
@@ -83,7 +87,69 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     assert.equal(writes.get(`runs/${runId}/diff.patch`).includes("new code"), true);
     assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
     assert.equal(writes.get(`runs/${runId}/stderr.log`), "");
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, true);
   } finally { globalThis.fetch = originalFetch; sqlite.close(); }
+});
+
+test("spec review rejects unrelated changes before GitHub publication", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      assert.equal(new URL(url).pathname.endsWith("/compat/chat/completions"), true);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false, unmet: [],
+        unrelated: ["Billing file is outside the export spec"], evidence: [] }) } }] });
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const row = sqlite.prepare("SELECT status, error FROM runs WHERE id = ?").get(runId);
+    assert.equal(row.status, "failed");
+    assert.match(row.error, /Billing file is outside/);
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, false);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("publication retries reuse the review for the same diff", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  const originalError = console.error;
+  let reviews = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async (url) => {
+      if (new URL(url).pathname.endsWith("/compat/chat/completions")) {
+        reviews++;
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"] }) } }] });
+      }
+      throw Error("GitHub is temporarily unavailable");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    await reconcile(env);
+    assert.equal(reviews, 1);
+    assert.match(JSON.parse(writes.get(`runs/${runId}/review.json`)).diffSha256, /^[a-f0-9]{64}$/);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "running");
+  } finally { globalThis.fetch = original; console.error = originalError; sqlite.close(); }
+});
+
+test("a nonretryable review error fails the run without opening a pull request", async () => {
+  const { sqlite, env, setTask } = fixture();
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      assert.equal(new URL(url).pathname.endsWith("/compat/chat/completions"), true);
+      return new Response("Invalid gateway credential", { status: 401 });
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const row = sqlite.prepare("SELECT status, error FROM runs WHERE id = ?").get(runId);
+    assert.equal(row.status, "failed");
+    assert.match(row.error, /Spec review could not run: Spec review model failed: 401/);
+  } finally { globalThis.fetch = original; sqlite.close(); }
 });
 
 test("unmerged specs cannot dispatch even when a run row exists", async () => {

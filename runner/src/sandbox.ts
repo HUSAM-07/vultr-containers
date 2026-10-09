@@ -104,6 +104,12 @@ export class AgentSandbox extends DurableObject<Env> {
     return (await this.files.readFile(path)).text();
   }
 
+  async spec(): Promise<string> {
+    const job = await this.ctx.storage.get<RunJob>("job");
+    if (!job) throw Error("Run source is unavailable");
+    return this.checked(["git", "show", `HEAD:${job.specPath}`], repoDir);
+  }
+
   async changes(): Promise<Upload[]> {
     await this.checked(["git", "add", "--all"], repoDir);
     const raw = await this.checked(["git", "diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "HEAD"], repoDir);
