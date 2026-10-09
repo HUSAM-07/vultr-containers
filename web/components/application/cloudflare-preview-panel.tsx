@@ -24,11 +24,14 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
   const [accountId, setAccountId] = useState("");
   const [token, setToken] = useState("");
   const [workerName, setWorkerName] = useState("");
+  const [newWorkerName, setNewWorkerName] = useState("");
+  const [writeToken, setWriteToken] = useState("");
   const [buildTokenId, setBuildTokenId] = useState("");
   const [rootDirectory, setRootDirectory] = useState("/");
   const [buildCommand, setBuildCommand] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function refresh() {
     const next = await request<State>(`/api/cloudflare?repo=${encodeURIComponent(repository)}`);
@@ -45,18 +48,35 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
     return () => { current = false; };
   }, [repository]);
 
-  async function act(action: "connect" | "enable" | "disconnect") {
-    setBusy(true); setError("");
+  async function act(action: "connect" | "create" | "enable" | "disconnect") {
+    setBusy(true); setError(""); setNotice("");
+    let createdName = "";
     try {
-      await request(action === "disconnect" ? `/api/cloudflare?repo=${encodeURIComponent(repository)}` : "/api/cloudflare",
+      const result = await request<{ workerName?: string; buildError?: string | null }>(action === "disconnect" ? `/api/cloudflare?repo=${encodeURIComponent(repository)}` : "/api/cloudflare",
         action === "disconnect" ? { method: "DELETE" } : {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, repo: repository, cloudflareAccountId: accountId.trim(), token: token.trim(), workerName,
+        body: JSON.stringify({ action, repo: repository, cloudflareAccountId: accountId.trim(), token: token.trim(),
+          workerName: action === "create" ? newWorkerName.trim() : workerName,
+          ...(action === "create" ? { writeToken: writeToken.trim() } : {}),
           buildTokenId, rootDirectory: rootDirectory.trim(), buildCommand: buildCommand.trim() }),
       });
+      if (action === "create") {
+        createdName = result.workerName || "";
+        setWriteToken("");
+        setWorkerName(createdName);
+        const enabled = await request<{ buildError?: string | null }>("/api/cloudflare", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "enable", repo: repository, workerName: createdName,
+            buildTokenId, rootDirectory: rootDirectory.trim(), buildCommand: buildCommand.trim(), startBuild: true }),
+        });
+        setNotice(enabled.buildError ? `Worker and Previews are connected. The first production build could not start: ${enabled.buildError}` : "Worker and Previews are connected. The first production build has started.");
+      } else if (result.buildError) setNotice(`Previews are connected. The first production build could not start: ${result.buildError}`);
       setToken("");
       await refresh();
-    } catch (cause) { setError((cause as Error).message); }
+    } catch (cause) {
+      setError(createdName ? `Worker ${createdName} was created. ${(cause as Error).message} Refresh and select it to finish setup.` : (cause as Error).message);
+      if (createdName) await refresh().catch(() => {});
+    }
     finally { setBusy(false); }
   }
 
@@ -64,6 +84,7 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
     <div className="flex items-center justify-between gap-2"><h3 className="flex items-center gap-2 text-body-medium"><RiCloudLine className="size-5 text-accent-600" aria-hidden />Worker Previews</h3><Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh Cloudflare connection" onClick={() => void refresh().catch(cause => setError((cause as Error).message))} /></div>
     <p className="mt-2 text-body-regular text-text-secondary">Give each implementation branch an isolated Cloudflare Worker URL.</p>
     {error && <p role="alert" className="mt-3 text-body-regular text-text-error-primary">{error}</p>}
+    {notice && <p role="status" className="mt-3 text-body-regular text-text-secondary">{notice}</p>}
     {!state ? null : !state.connected && !state.canManage ? <p className="mt-4 text-body-regular text-text-secondary">A project admin can connect Cloudflare to enable branch Previews.</p> : !state.connected ? <div className="mt-4 grid gap-3">
       <Input label="Cloudflare account ID" value={accountId} onChange={setAccountId} placeholder="32-character account ID" />
       {state.oauthAvailable && <><ButtonLink size="small" href={`/api/cloudflare/oauth/start?repo=${encodeURIComponent(repository)}&account=${encodeURIComponent(accountId.trim())}`}
@@ -76,9 +97,8 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
       <a className="inline-flex items-center gap-1 text-caption-1-semibold text-accent-600 hover:underline" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Create an API token <RiExternalLinkLine className="size-4" aria-hidden /></a>
     </div> : <div className="mt-4 grid gap-3">
       {state.canManage && <><p className="text-caption-1-regular text-text-secondary">Connected account <span className="font-mono">{state.accountId}</span>{state.authMethod === "oauth" ? " via Cloudflare authorization" : " via API token"}</p>
-        {state.workers.length ? <><p className="text-body-medium">Choose a Worker</p><div role="group" aria-label="Cloudflare Worker" className="flex flex-wrap gap-2">{state.workers.map(worker => <Button key={worker.tag} size="small" variant={workerName === worker.name ? "primary" : "secondary"} aria-pressed={workerName === worker.name} onClick={() => setWorkerName(worker.name)}>{worker.name}</Button>)}</div></> : <p className="text-body-regular text-text-secondary">No Workers are deployed in this account yet.</p>}
-        {state.accountId && <div className="grid gap-2"><p className="text-body-regular text-text-secondary">Need a Worker for this project? Import its GitHub repository in Cloudflare, deploy it, then refresh this list.</p><ButtonLink size="small" variant="secondary" href={`https://dash.cloudflare.com/${state.accountId}/workers-and-pages/create`} target="_blank" rel="noreferrer" trailingIcon={RiExternalLinkLine}>Import repository as Worker</ButtonLink></div>}
-        {!state.preview && state.workers.length > 0 && <div className="grid gap-3 rounded-xl border border-border-button-default bg-background-primary-default p-3">
+        {state.workers.length ? <><p className="text-body-medium">Choose a Worker</p><div role="group" aria-label="Cloudflare Worker" className="flex flex-wrap gap-2">{state.workers.map(worker => <Button key={worker.tag} size="small" variant={workerName === worker.name ? "primary" : "secondary"} aria-pressed={workerName === worker.name} onClick={() => setWorkerName(worker.name)}>{worker.name}</Button>)}</div></> : <p className="text-body-regular text-text-secondary">No Workers were found in this account.</p>}
+        {!state.preview && <div className="grid gap-3 rounded-xl border border-border-button-default bg-background-primary-default p-3">
           <p className="text-body-medium">Connect this repository to the Worker</p>
           <p className="text-caption-1-regular text-text-secondary">If the Worker already builds from this repository, Fava reuses its production settings. Otherwise, choose a Cloudflare Builds deployment token and enter the repository build settings.</p>
           {state.buildTokens.length > 0 ? <div role="group" aria-label="Cloudflare Builds deployment token" className="flex flex-wrap gap-2">{state.buildTokens.map(item => <Button key={item.id} size="small" variant={buildTokenId === item.id ? "primary" : "secondary"} aria-pressed={buildTokenId === item.id} onClick={() => setBuildTokenId(item.id)}>{item.name || item.id}</Button>)}</div>
@@ -86,6 +106,15 @@ export function CloudflarePreviewPanel({ repository }: { repository: string }) {
           <Input label="Worker root directory" value={rootDirectory} onChange={setRootDirectory} placeholder="/" />
           <Input label="Build command, if needed" value={buildCommand} onChange={setBuildCommand} placeholder="npm run build" />
         </div>}
+        {!state.preview && <div className="grid gap-3 rounded-xl border border-border-button-default bg-background-primary-default p-3">
+          <p className="text-body-medium">Create a Worker for this project</p>
+          <p className="text-caption-1-regular text-text-secondary">Fava checks your Wrangler config and Preview resources, creates the Worker without deploying placeholder code, then connects GitHub Builds and starts the first production build.</p>
+          <Input label="New Worker name" value={newWorkerName} onChange={setNewWorkerName} placeholder="my-worker" />
+          <Input label="One-time Workers Scripts Write token" type="password" value={writeToken} onChange={setWriteToken} placeholder="Cloudflare API token" />
+          <p className="text-caption-1-regular text-text-tertiary">This token is used for creation and is never saved by Fava. Scope it to the connected Cloudflare account. The existing connection handles future Builds.</p>
+          <Button size="small" disabled={busy || !newWorkerName.trim() || !writeToken.trim() || !buildTokenId} onClick={() => void act("create")}>Create Worker and start deployment</Button>
+        </div>}
+        {state.accountId && !state.preview && <ButtonLink size="small" variant="secondary" href={`https://dash.cloudflare.com/${state.accountId}/workers-and-pages/create`} target="_blank" rel="noreferrer" trailingIcon={RiExternalLinkLine}>Create in Cloudflare dashboard</ButtonLink>}
         <p className="text-caption-1-regular text-text-tertiary">The repository needs Wrangler 4.135.0 or later and a root Wrangler config with a <code>previews</code> block. Configure Preview variables, API bindings, Worker Loaders, define values, containers, Durable Object bindings, and separate account resources such as D1, R2, KV, and queues. Set Preview secrets separately. Cloudflare&apos;s GitHub App must be installed for the repository. Branch Previews that reference the same account resource share its data.</p></>}
       {state.preview ? <p role="status" className="rounded-xl border border-border-button-default bg-background-primary-default p-3 text-body-regular">Previews enabled for <strong>{state.preview.workerName}</strong>. Branch pushes will use <code>npx wrangler preview</code>.</p> : state.canManage ? <Button size="small" disabled={busy || !workerName} onClick={() => void act("enable")}>Connect repository and enable Previews</Button> : <p className="text-body-regular text-text-secondary">A project admin can enable branch Previews.</p>}
       <p className="text-caption-1-regular text-text-tertiary">Preview URLs are public by default. Protect sensitive projects with <a className="text-accent-600 hover:underline" href="https://developers.cloudflare.com/workers/previews/#access-control" target="_blank" rel="noreferrer">Cloudflare Access</a> and use separate Preview data resources.</p>

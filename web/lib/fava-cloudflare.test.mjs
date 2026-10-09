@@ -1,6 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareError, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths } from "./fava-cloudflare.ts";
+import { CloudflareError, createWorker, decryptToken, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths } from "./fava-cloudflare.ts";
+
+test("creates a Worker and an undeployed initial version", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, method: init.method, body: JSON.parse(init.body) });
+    return Response.json({ success: true, result: { id: "worker-id" } });
+  };
+  try {
+    assert.deepEqual(await createWorker("test-token", "account-id", "my-worker"), { id: "worker-id" });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, "https://api.cloudflare.com/client/v4/accounts/account-id/workers/workers");
+    assert.deepEqual(calls[0].body, { name: "my-worker" });
+    assert.equal(calls[1].url, "https://api.cloudflare.com/client/v4/accounts/account-id/workers/workers/worker-id/versions");
+    assert.equal(calls[1].body.main_module, "index.js");
+    assert.equal(atob(calls[1].body.modules[0].content_base64).includes("Deployment pending"), true);
+    assert.equal(calls.every(call => call.method === "POST" && !call.url.includes("deployments")), true);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("does not attach a Worker already built from another repository", () => {
   assert.doesNotThrow(() => verifyWorkerRepository([], "repo-1", 42));

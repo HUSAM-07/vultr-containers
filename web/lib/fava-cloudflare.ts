@@ -87,9 +87,26 @@ export async function cloudflare<T>(token: string, path: string, method = "GET",
   const payload = await response.json().catch(() => null) as { success?: boolean; result?: T;
     errors?: { message?: string }[] } | null;
   if (!response.ok || !payload?.success)
-    throw new CloudflareError(response.status === 401 || response.status === 403 ? 403 : 502,
+    throw new CloudflareError(response.status === 401 || response.status === 403 ? 403 :
+      response.status === 400 || response.status === 409 ? response.status : 502,
       payload?.errors?.[0]?.message || "Cloudflare request failed");
   return payload.result as T;
+}
+
+export async function createWorker(token: string, accountId: string, name: string) {
+  const worker = await cloudflare<{ id: string }>(token,
+    `/accounts/${accountId}/workers/workers`, "POST", { name });
+  if (!worker?.id) throw new CloudflareError(502, "Cloudflare created the Worker but did not return its ID. Check the account before retrying.");
+  try {
+    const script = "export default { fetch() { return new Response('Deployment pending', { status: 503 }); } };";
+    await cloudflare(token, `/accounts/${accountId}/workers/workers/${encodeURIComponent(worker.id)}/versions`, "POST", {
+      main_module: "index.js", compatibility_date: new Date().toISOString().slice(0, 10),
+      modules: [{ name: "index.js", content_type: "application/javascript+module", content_base64: btoa(script) }],
+    });
+  } catch (error) {
+    throw new CloudflareError(502, `Worker ${name} was created, but Cloudflare could not initialize its version: ${error instanceof Error ? error.message : "retry in Cloudflare"}`);
+  }
+  return worker;
 }
 
 type Binding = Record<string, unknown>;

@@ -4,7 +4,7 @@ import { readSession, setSession } from "@/lib/fava-session";
 import { github, GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
-import { cloudflare, CloudflareError, cloudflareToken, connectionFor, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths, type BuildTrigger, type PreviewBuild, type CloudflareConnection } from "@/lib/fava-cloudflare";
+import { cloudflare, CloudflareError, cloudflareToken, connectionFor, createWorker, encryptToken, productionTrigger, recentPreviewBuilds, verifyPreviewConfig, verifyWorkerRepository, wranglerConfigPaths, type BuildTrigger, type PreviewBuild, type CloudflareConnection } from "@/lib/fava-cloudflare";
 
 type Worker = { id: string; tag: string };
 type BuildToken = { build_token_uuid: string; build_token_name: string };
@@ -106,12 +106,49 @@ export async function POST(request: NextRequest) {
       if (auth.refreshed) await setSession(response, request, auth.session);
       return response;
     }
-    if (body.action !== "enable" || !("repo" in body) || typeof body.repo !== "string" ||
+    if ((body.action !== "enable" && body.action !== "create") || !("repo" in body) || typeof body.repo !== "string" ||
       !("workerName" in body) || typeof body.workerName !== "string")
       throw new CloudflareError(400, "Choose a Worker to enable Previews");
     const connection = await connectionFor(env.DB, accountId);
     if (!connection) throw new CloudflareError(400, "Connect Cloudflare first");
     const { token, workers } = await workersFor(connection);
+    if (body.action === "create") {
+      const name = body.workerName.trim();
+      const writeToken = "writeToken" in body && typeof body.writeToken === "string" ? body.writeToken : "";
+      const rootDirectory = "rootDirectory" in body && typeof body.rootDirectory === "string" ? body.rootDirectory : "/";
+      const buildTokenId = "buildTokenId" in body && typeof body.buildTokenId === "string" ? body.buildTokenId : "";
+      const buildCommand = "buildCommand" in body && typeof body.buildCommand === "string" ? body.buildCommand : "";
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name) ||
+        writeToken.length < 20 || writeToken.length > 512 || /\s/.test(writeToken))
+        throw new CloudflareError(400, "Enter a valid Worker name and one-time Workers Scripts Write token");
+      if (buildCommand.length > 200 || /[\r\n\0]/.test(buildCommand))
+        throw new CloudflareError(400, "Enter a valid build command");
+      if (workers.some(item => item.id === name))
+        throw new CloudflareError(409, "This Worker already exists. Select it from the list instead.");
+      const [owner, repoName] = body.repo.split("/");
+      const repository = await github<{ id: number; owner: { id: number; login: string } }>(auth.session.token,
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}`);
+      if (repository.id !== project.githubRepoId) throw new CloudflareError(403, "Repository identity changed; relink it to Fava");
+      verifyPreviewConfig(await wranglerSource(auth.session.token, body.repo, project.defaultBranch, rootDirectory), name);
+      const buildTokens = await cloudflare<BuildToken[]>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/tokens`);
+      if (!buildTokens.some(item => item.build_token_uuid === buildTokenId))
+        throw new CloudflareError(400, "Select an existing Cloudflare Builds deployment token");
+      const repoConnection = await cloudflare<{ repo_connection_uuid: string }>(token,
+        `/accounts/${connection.cloudflare_account_id}/builds/repos/connections`, "PUT", {
+          provider_type: "github", provider_account_id: String(repository.owner.id),
+          provider_account_name: repository.owner.login, repo_id: String(repository.id), repo_name: repoName });
+      if (!repoConnection.repo_connection_uuid)
+        throw new CloudflareError(502, "Install Cloudflare's GitHub App for this repository before creating a Worker");
+      await createWorker(writeToken, connection.cloudflare_account_id, name);
+      const available = await cloudflare<Worker[]>(token,
+        `/accounts/${connection.cloudflare_account_id}/workers/scripts`);
+      if (!available.some(item => item.id === name && item.tag))
+        throw new CloudflareError(502, `Worker ${name} was created, but is not yet listed with a tag. Refresh this panel to continue setup.`);
+      const response = NextResponse.json({ workerName: name });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
     const worker = workers.find(item => item.id === body.workerName);
     if (!worker?.tag) throw new CloudflareError(400, "Select a Worker in the connected Cloudflare account");
     const triggers = await cloudflare<BuildTrigger[]>(token,
@@ -135,6 +172,7 @@ export async function POST(request: NextRequest) {
     verifyWorkerRepository(triggers, repoConnectionUuid, repository.id);
     let production = productionTrigger(triggers, project.defaultBranch, repository.id) ||
       productionTrigger(triggers, project.defaultBranch, repository.id, repoConnectionUuid);
+    const newProduction = !production;
     if (!production) {
       const buildTokenId = "buildTokenId" in body && typeof body.buildTokenId === "string" ? body.buildTokenId : "";
       const buildCommand = "buildCommand" in body && typeof body.buildCommand === "string" ? body.buildCommand : "";
@@ -178,7 +216,17 @@ export async function POST(request: NextRequest) {
       await env.DB.prepare("INSERT INTO cloudflare_project_previews (project_id, account_id, worker_name, worker_tag, trigger_uuid, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET account_id = excluded.account_id, worker_name = excluded.worker_name, worker_tag = excluded.worker_tag, trigger_uuid = excluded.trigger_uuid, created_at = excluded.created_at")
         .bind(project.id, accountId, worker.id, worker.tag, triggerUuid, Date.now()).run();
     } catch { throw new CloudflareError(502, `Preview trigger ${triggerUuid} was created, but Fava could not save it. Reopen this project to retry.`); }
-    const response = NextResponse.json({ workerName: worker.id, triggerUuid });
+    let buildError: string | null = null;
+    if (newProduction && "startBuild" in body && body.startBuild === true) {
+      try {
+        await cloudflare(token,
+          `/accounts/${connection.cloudflare_account_id}/builds/triggers/${production.trigger_uuid}/builds`,
+          "POST", { branch: project.defaultBranch });
+      } catch (error) {
+        buildError = error instanceof Error ? error.message : "Could not start the first build";
+      }
+    }
+    const response = NextResponse.json({ workerName: worker.id, triggerUuid, buildError });
     if (auth.refreshed) await setSession(response, request, auth.session);
     return response;
   } catch (error) { return errorResponse(error); }
