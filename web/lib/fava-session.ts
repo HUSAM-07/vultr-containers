@@ -24,14 +24,19 @@ function deadline(session: FavaSession) {
 }
 
 export async function createSession(db: Db, session: FavaSession) {
-  await db.prepare("INSERT INTO sessions (id_hash, github_id, expires_at) VALUES (?, ?, ?)")
-    .bind(await idHash(session.id), session.user.id, deadline(session)).run();
+  await db.prepare("INSERT INTO sessions (id_hash, github_id, expires_at, payload_ciphertext) VALUES (?, ?, ?, ?)")
+    .bind(await idHash(session.id), session.user.id, deadline(session), await seal(session)).run();
 }
 
 export async function revokeSession(db: Db, request: NextRequest) {
-  const session = await unseal(request.cookies.get(cookieName)?.value);
-  if (session) await db.prepare("UPDATE sessions SET revoked_at = ? WHERE id_hash = ? AND github_id = ?")
-    .bind(Date.now(), await idHash(session.id), session.user.id).run();
+  const value = request.cookies.get(cookieName)?.value;
+  const id = validId(value) ? value : (await unseal(value))?.id;
+  if (id) await db.prepare("UPDATE sessions SET revoked_at = ? WHERE id_hash = ?")
+    .bind(Date.now(), await idHash(id)).run();
+}
+
+function validId(value?: string): value is string {
+  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value || "");
 }
 
 function secret() {
@@ -73,13 +78,22 @@ export async function unseal(value?: string): Promise<FavaSession | null> {
 }
 
 export async function readSession(request: NextRequest, db: Db) {
-  const session = await unseal(request.cookies.get(cookieName)?.value);
-  if (!session) return null;
-  const hash = await idHash(session.id);
-  const active = await db.prepare("SELECT 1 AS active FROM sessions WHERE id_hash = ? AND github_id = ? AND revoked_at IS NULL AND expires_at > ?")
-    .bind(hash, session.user.id, Date.now()).first();
+  const cookie = request.cookies.get(cookieName)?.value;
+  const legacy = validId(cookie) ? null : await unseal(cookie);
+  const id = validId(cookie) ? cookie : legacy?.id;
+  if (!id) return null;
+  const hash = await idHash(id);
+  const active = await db.prepare("SELECT github_id AS githubId, payload_ciphertext AS payload FROM sessions WHERE id_hash = ? AND revoked_at IS NULL AND expires_at > ?")
+    .bind(hash, Date.now()).first<{ githubId: number; payload: string | null }>();
   if (!active) return null;
-  if (session.expiresAt > Date.now() + 60_000) return { session, refreshed: false };
+  const session = active.payload ? await unseal(active.payload) : legacy;
+  if (!session || session.id !== id || session.user.id !== active.githubId) return null;
+  if (!active.payload) {
+    const migrated = await db.prepare("UPDATE sessions SET payload_ciphertext = ? WHERE id_hash = ? AND payload_ciphertext IS NULL AND revoked_at IS NULL")
+      .bind(await seal(session), hash).run();
+    if (migrated.meta.changes !== 1) return null;
+  }
+  if (session.expiresAt > Date.now() + 60_000) return { session, refreshed: Boolean(legacy) };
   if (!session.refreshToken || !session.refreshExpiresAt || session.refreshExpiresAt <= Date.now()) return null;
   const clientId = process.env.GITHUB_APP_CLIENT_ID;
   const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
@@ -96,13 +110,13 @@ export async function readSession(request: NextRequest, db: Db) {
   const renewed = { ...session, token: value.access_token, expiresAt: Date.now() + value.expires_in * 1000,
     refreshToken: value.refresh_token || session.refreshToken,
     refreshExpiresAt: value.refresh_token_expires_in ? Date.now() + value.refresh_token_expires_in * 1000 : session.refreshExpiresAt };
-  const updated = await db.prepare("UPDATE sessions SET expires_at = ? WHERE id_hash = ? AND revoked_at IS NULL")
-    .bind(deadline(renewed), hash).run();
+  const updated = await db.prepare("UPDATE sessions SET expires_at = ?, payload_ciphertext = ? WHERE id_hash = ? AND revoked_at IS NULL")
+    .bind(deadline(renewed), await seal(renewed), hash).run();
   return updated.meta.changes === 1 ? { session: renewed, refreshed: true } : null;
 }
 
 export async function setSession(response: NextResponse, request: NextRequest, session: FavaSession) {
-  response.cookies.set(cookieName, await seal(session), { httpOnly: true, secure: request.nextUrl.protocol === "https:",
+  response.cookies.set(cookieName, session.id, { httpOnly: true, secure: request.nextUrl.protocol === "https:",
     sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
 }
 

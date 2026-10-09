@@ -16,6 +16,8 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0008_run_mcp_grants.sql").read_text())
         db.executescript(Path(__file__).with_name("0009_implementation_sha.sql").read_text())
         db.executescript(Path(__file__).with_name("0010_run_publication_fence.sql").read_text())
+        db.executescript(Path(__file__).with_name("0011_server_sessions.sql").read_text())
+        self.assertIn("payload_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(sessions)")])
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")
         db.execute("INSERT INTO accounts VALUES ('a', 'Team', 1, 1)")
         db.execute("INSERT INTO account_memberships VALUES ('a', 1, 'owner')")

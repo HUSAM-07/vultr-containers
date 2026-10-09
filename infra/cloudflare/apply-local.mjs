@@ -131,3 +131,13 @@ if (publicationColumns.includes("publishing_at")) {
   if (!installed.includes("publishing_at")) throw Error("Local run-publication migration verification failed");
   console.log("Local run-publication migration applied");
 }
+
+const sessionColumns = (await query("PRAGMA table_info(sessions)")).rows.map(row => row[1]);
+if (sessionColumns.includes("payload_ciphertext")) {
+  console.log("Local server-session migration is already applied");
+} else {
+  await query(await readFile(new URL("./0011_server_sessions.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(sessions)")).rows.map(row => row[1]);
+  if (!installed.includes("payload_ciphertext")) throw Error("Local server-session migration verification failed");
+  console.log("Local server-session migration applied");
+}

@@ -11,7 +11,7 @@ import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
-import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
+import { createSession, readSession, revokeSession, seal, setSession, unseal } from "./fava-session.ts";
 import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
@@ -28,6 +28,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0008_run_mcp_grants.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0009_implementation_sha.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0010_run_publication_fence.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0011_server_sessions.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -480,7 +481,7 @@ test("spec pipeline includes only single-file proposals to the default branch", 
   } finally { globalThis.fetch = original; }
 });
 
-test("session cookie is encrypted and rejects tampering", async () => {
+test("stored session payload is encrypted and rejects tampering", async () => {
   process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
   const session = { id: crypto.randomUUID(), token: "sensitive-token", expiresAt: Date.now() + 1000,
     user: { id: 1, login: "test", avatarUrl: "" } };
@@ -490,7 +491,7 @@ test("session cookie is encrypted and rejects tampering", async () => {
   assert.equal(await unseal((cookie.startsWith("A") ? "B" : "A") + cookie.slice(1)), null);
 });
 
-test("logout revokes a session in D1 even if its encrypted cookie is reused", async () => {
+test("session cookie is opaque and logout revokes it in D1", async () => {
   process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
   const { db, sqlite } = testDb();
   try {
@@ -499,13 +500,74 @@ test("logout revokes a session in D1 even if its encrypted cookie is reused", as
       expiresAt: Date.now() + 600_000, refreshExpiresAt: Date.now() + 86_400_000,
       user: { id: 1, login: "test", avatarUrl: "" } };
     await createSession(db, session);
-    const cookie = await seal(session);
+    const saved = sqlite.prepare("SELECT id_hash, payload_ciphertext FROM sessions").get();
+    assert.equal(saved.id_hash.includes(session.id), false);
+    assert.equal(saved.payload_ciphertext.includes(session.token), false);
+    assert.deepEqual(await unseal(saved.payload_ciphertext), session);
+    let cookie = "";
+    await setSession({ cookies: { set: (_name, value) => { cookie = value; } } },
+      { nextUrl: { protocol: "https:" } }, session);
+    assert.equal(cookie, session.id);
     const reused = { cookies: { get: () => ({ value: cookie }) } };
     assert.equal((await readSession(reused, db)).session.user.id, 1);
     await revokeSession(db, reused);
     assert.equal(await readSession(reused, db), null);
-    assert.equal(sqlite.prepare("SELECT id_hash FROM sessions").get().id_hash.includes(session.id), false);
   } finally { sqlite.close(); }
+});
+
+test("legacy encrypted cookies migrate to server-side sessions", async () => {
+  process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
+  const { db, sqlite } = testDb();
+  try {
+    await ensurePersonalAccount(db, { id: 1, login: "test", avatarUrl: "" });
+    const session = { id: crypto.randomUUID(), token: "legacy-token", expiresAt: Date.now() + 600_000,
+      user: { id: 1, login: "test", avatarUrl: "" } };
+    await createSession(db, session);
+    sqlite.exec("UPDATE sessions SET payload_ciphertext = NULL");
+    const cookie = await seal(session);
+    const migrated = await readSession({ cookies: { get: () => ({ value: cookie }) } }, db);
+    assert.equal(migrated.refreshed, true);
+    assert.deepEqual(migrated.session, session);
+    assert.equal((await readSession({ cookies: { get: () => ({ value: session.id }) } }, db)).session.token,
+      "legacy-token");
+  } finally { sqlite.close(); }
+});
+
+test("GitHub token refresh replaces the encrypted server record", async () => {
+  process.env.FAVA_SESSION_SECRET = "test-secret-that-is-at-least-32-characters-long";
+  const originalFetch = globalThis.fetch;
+  const originalId = process.env.GITHUB_APP_CLIENT_ID;
+  const originalSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+  process.env.GITHUB_APP_CLIENT_ID = "client";
+  process.env.GITHUB_APP_CLIENT_SECRET = "secret";
+  const { db, sqlite } = testDb();
+  try {
+    await ensurePersonalAccount(db, { id: 1, login: "test", avatarUrl: "" });
+    const session = { id: crypto.randomUUID(), token: "old-token", refreshToken: "refresh-token",
+      expiresAt: Date.now() + 30_000, refreshExpiresAt: Date.now() + 86_400_000,
+      user: { id: 1, login: "test", avatarUrl: "" } };
+    await createSession(db, session);
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(new URLSearchParams(init.body).get("grant_type"), "refresh_token");
+      return Response.json({ access_token: "new-token", expires_in: 3600,
+        refresh_token: "new-refresh-token", refresh_token_expires_in: 86_400 });
+    };
+    const request = { cookies: { get: () => ({ value: session.id }) } };
+    const refreshed = await readSession(request, db);
+    assert.equal(refreshed.refreshed, true);
+    assert.equal(refreshed.session.token, "new-token");
+    assert.equal(refreshed.session.refreshToken, "new-refresh-token");
+    const saved = sqlite.prepare("SELECT payload_ciphertext FROM sessions").get().payload_ciphertext;
+    assert.equal(saved.includes("new-token"), false);
+    assert.equal((await unseal(saved)).token, "new-token");
+    assert.equal((await readSession(request, db)).refreshed, false);
+  } finally {
+    sqlite.close(); globalThis.fetch = originalFetch;
+    if (originalId === undefined) delete process.env.GITHUB_APP_CLIENT_ID;
+    else process.env.GITHUB_APP_CLIENT_ID = originalId;
+    if (originalSecret === undefined) delete process.env.GITHUB_APP_CLIENT_SECRET;
+    else process.env.GITHUB_APP_CLIENT_SECRET = originalSecret;
+  }
 });
 
 test("GitHub authorization revocation invalidates only that user's sessions", async () => {
@@ -518,8 +580,7 @@ test("GitHub authorization revocation invalidates only that user's sessions", as
       const session = { id: crypto.randomUUID(), token: `token-${id}`,
         expiresAt: Date.now() + 600_000, user: { id, login: `user${id}`, avatarUrl: "" } };
       await createSession(db, session);
-      const cookie = await seal(session);
-      sessions.push({ cookies: { get: () => ({ value: cookie }) } });
+      sessions.push({ cookies: { get: () => ({ value: session.id }) } });
     }
     await assert.rejects(processAuthorizationRevocation(db, { action: "revoked", sender: { id: "1" } }),
       /Invalid authorization webhook/);
