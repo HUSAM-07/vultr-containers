@@ -52,23 +52,23 @@ export async function createAccount(db: Db, userId: number, name: string) {
 }
 
 export async function listAccountMembers(db: Db, accountId: string) {
-  const result = await db.prepare("SELECT users.github_id AS githubId, users.login, account_memberships.role FROM account_memberships JOIN users ON users.github_id = account_memberships.github_id WHERE account_memberships.account_id = ? ORDER BY users.login COLLATE NOCASE")
-    .bind(accountId).all<{ githubId: number; login: string; role: Role }>();
+  const result = await db.prepare("SELECT users.github_id AS githubId, users.login, account_memberships.role, EXISTS(SELECT 1 FROM accounts AS personal WHERE personal.id = 'github:' || users.github_id) AS signedIn FROM account_memberships JOIN users ON users.github_id = account_memberships.github_id WHERE account_memberships.account_id = ? ORDER BY users.login COLLATE NOCASE")
+    .bind(accountId).all<{ githubId: number; login: string; role: Role; signedIn: number }>();
   return result.results;
 }
 
-async function signedInUser(db: Db, token: string, login: string) {
+async function githubUser(db: Db, token: string, login: string) {
   const identity = await github<{ id: number; login: string }>(token, `/users/${encodeURIComponent(login)}`);
-  const user = await db.prepare("SELECT github_id AS githubId FROM users WHERE github_id = ?")
-    .bind(identity.id).first<{ githubId: number }>();
-  if (!user) throw new GitHubError(404, "This GitHub user must sign in to Fava before joining a workspace");
-  await db.prepare("UPDATE users SET login = ? WHERE github_id = ?").bind(identity.login, user.githubId).run();
-  return user.githubId;
+  if (!Number.isSafeInteger(identity.id) || identity.id <= 0 ||
+    !/^[A-Za-z0-9-]{1,39}$/.test(identity.login)) throw new GitHubError(502, "GitHub returned an invalid user");
+  await db.prepare("INSERT INTO users (github_id, login, created_at) VALUES (?, ?, ?) ON CONFLICT(github_id) DO UPDATE SET login = excluded.login")
+    .bind(identity.id, identity.login, Date.now()).run();
+  return identity.id;
 }
 
 export async function setAccountMember(db: Db, accountId: string, token: string, login: string,
   role: "admin" | "editor" | "viewer") {
-  const githubId = await signedInUser(db, token, login);
+  const githubId = await githubUser(db, token, login);
   const account = await db.prepare("SELECT owner_github_id AS ownerGithubId FROM accounts WHERE id = ?")
     .bind(accountId).first<{ ownerGithubId: number }>();
   if (githubId === account?.ownerGithubId) throw new GitHubError(403, "Workspace owner role cannot be changed");
@@ -147,14 +147,14 @@ export async function projectAccess(db: Db, userId: number, repository: string, 
 }
 
 export async function listProjectMembers(db: Db, projectId: string) {
-  const result = await db.prepare("SELECT users.github_id AS githubId, users.login, project_memberships.role FROM project_memberships JOIN users ON users.github_id = project_memberships.github_id WHERE project_memberships.project_id = ? ORDER BY users.login COLLATE NOCASE")
-    .bind(projectId).all<{ githubId: number; login: string; role: "admin" | "editor" | "viewer" }>();
+  const result = await db.prepare("SELECT users.github_id AS githubId, users.login, project_memberships.role, EXISTS(SELECT 1 FROM accounts AS personal WHERE personal.id = 'github:' || users.github_id) AS signedIn FROM project_memberships JOIN users ON users.github_id = project_memberships.github_id WHERE project_memberships.project_id = ? ORDER BY users.login COLLATE NOCASE")
+    .bind(projectId).all<{ githubId: number; login: string; role: "admin" | "editor" | "viewer"; signedIn: number }>();
   return result.results;
 }
 
 export async function setProjectMember(db: Db, projectId: string, token: string, login: string,
   role: "admin" | "editor" | "viewer") {
-  const githubId = await signedInUser(db, token, login);
+  const githubId = await githubUser(db, token, login);
   await db.prepare("INSERT INTO project_memberships (project_id, github_id, role) VALUES (?, ?, ?) ON CONFLICT(project_id, github_id) DO UPDATE SET role = excluded.role")
     .bind(projectId, githubId, role).run();
   return githubId;

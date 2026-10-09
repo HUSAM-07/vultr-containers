@@ -166,22 +166,29 @@ test("project membership grants only its role and still requires the same GitHub
   } finally { globalThis.fetch = original; sqlite.close(); }
 });
 
-test("project administrators can add, change, and remove signed-in members", async () => {
+test("project administrators can add GitHub users before sign-in", async () => {
   const { sqlite, db } = testDb();
   const original = globalThis.fetch;
   try {
     const account = await ensurePersonalAccount(db, { id: 1, login: "owner", avatarUrl: "" });
     await ensurePersonalAccount(db, { id: 2, login: "member", avatarUrl: "" });
-    const project = await linkProject(db, account,
-      { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" });
+    const repo = { id: 42, fullName: "owner/repo", installationId: 7, defaultBranch: "main" };
+    const project = await linkProject(db, account, repo);
     globalThis.fetch = async url => Response.json(String(url).endsWith("/unknown")
       ? { id: 999, login: "unknown" } : { id: 2, login: "member" });
-    await assert.rejects(setProjectMember(db, project.id, "test-token", "unknown", "viewer"), /sign in/);
+    assert.equal(await setProjectMember(db, project.id, "test-token", "unknown", "viewer"), 999);
+    assert.deepEqual(await listProjectMembers(db, project.id),
+      [{ githubId: 999, login: "unknown", role: "viewer", signedIn: 0 }]);
+    await ensurePersonalAccount(db, { id: 999, login: "renamed", avatarUrl: "" });
+    assert.deepEqual((await listProjectMembers(db, project.id)).find(member => member.githubId === 999),
+      { githubId: 999, login: "renamed", role: "viewer", signedIn: 1 });
+    assert.equal((await listProjects(db, 999, [repo]))[0].id, project.id);
     assert.equal(await setProjectMember(db, project.id, "test-token", "MEMBER", "viewer"), 2);
-    assert.deepEqual(await listProjectMembers(db, project.id), [{ githubId: 2, login: "member", role: "viewer" }]);
+    assert.equal((await listProjectMembers(db, project.id)).find(member => member.githubId === 2)?.signedIn, 1);
     await setProjectMember(db, project.id, "test-token", "member", "editor");
-    assert.equal((await listProjectMembers(db, project.id))[0].role, "editor");
+    assert.equal((await listProjectMembers(db, project.id)).find(member => member.githubId === 2)?.role, "editor");
     await removeProjectMember(db, project.id, 2);
+    await removeProjectMember(db, project.id, 999);
     assert.deepEqual(await listProjectMembers(db, project.id), []);
   } finally { globalThis.fetch = original; sqlite.close(); }
 });
@@ -196,10 +203,16 @@ test("team workspace roles control access and protect its owner", async () => {
     assert.equal((await listAccounts(db, 1)).find(item => item.id === team.id)?.role, "owner");
     await assert.rejects(accountAccess(db, 2, team.id), /do not have access/);
     globalThis.fetch = async url => Response.json(String(url).endsWith("/owner")
-      ? { id: 1, login: "owner" } : { id: 2, login: "member" });
+      ? { id: 1, login: "owner" } : String(url).endsWith("/newbie")
+        ? { id: 3, login: "newbie" } : { id: 2, login: "member" });
+    await setAccountMember(db, team.id, "test-token", "newbie", "viewer");
+    assert.equal((await listAccountMembers(db, team.id)).find(member => member.githubId === 3)?.signedIn, 0);
+    await ensurePersonalAccount(db, { id: 3, login: "newbie", avatarUrl: "" });
+    assert.equal((await listAccountMembers(db, team.id)).find(member => member.githubId === 3)?.signedIn, 1);
+    assert.equal((await listAccounts(db, 3)).find(account => account.id === team.id)?.role, "viewer");
     await setAccountMember(db, team.id, "test-token", "member", "viewer");
     await assert.rejects(accountAccess(db, 2, team.id, "admin"), /do not have access/);
-    assert.equal((await listAccountMembers(db, team.id)).length, 2);
+    assert.equal((await listAccountMembers(db, team.id)).length, 3);
     await setAccountMember(db, team.id, "test-token", "member", "admin");
     assert.equal((await accountAccess(db, 2, team.id, "admin")).role, "admin");
     await assert.rejects(setAccountMember(db, team.id, "test-token", "owner", "viewer"), /owner role/);

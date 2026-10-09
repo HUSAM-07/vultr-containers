@@ -5,7 +5,7 @@ import { RiTeamLine } from "@remixicon/react";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 
-type Member = { githubId: number; login: string; role: "admin" | "editor" | "viewer" };
+type Member = { githubId: number; login: string; role: "admin" | "editor" | "viewer"; signedIn: number };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
@@ -42,7 +42,7 @@ export function ProjectMembersPanel({ repository }: { repository: string }) {
 
   return <section className="mt-6 border-t border-separator-border pt-5" aria-label="Project members">
     <h3 className="flex items-center gap-2 text-body-medium"><RiTeamLine className="size-5 text-accent-600" aria-hidden />Project members</h3>
-    <p className="mt-2 text-body-regular text-text-secondary">Members must have signed in to Fava and have GitHub access to this repository. Admins manage project settings; editors write specs and project skills; viewers inspect runs.</p>
+    <p className="mt-2 text-body-regular text-text-secondary">Add a GitHub user now; their project access becomes available after they sign in to Fava and authorize this repository. Admins manage project settings; editors write specs and project skills; viewers inspect runs.</p>
     {error && <p role="alert" className="mt-3 text-body-regular text-text-error-primary">{error}</p>}
     <div className="mt-4 grid gap-3"><Input label="GitHub username" value={login} onChange={setLogin} placeholder="octocat" />
       <div role="group" aria-label="Project role" className="flex flex-wrap gap-2">{(["viewer", "editor", "admin"] as const).map(option =>
@@ -52,7 +52,7 @@ export function ProjectMembersPanel({ repository }: { repository: string }) {
     </div>
     {members.length ? <ul className="mt-4 grid gap-2">{members.map(member => <li key={member.githubId}
       className="flex items-center justify-between gap-2 rounded-xl border border-border-button-default bg-background-primary-default p-3">
-      <span className="min-w-0 truncate text-body-regular">{member.login} · {member.role}</span>
+      <span className="min-w-0 truncate text-body-regular">{member.login} · {member.role}{!member.signedIn && " · Awaiting sign-in"}</span>
       <Button variant="ghost" size="xs" disabled={busy} onClick={() => void change("remove", member)}>Remove</Button>
     </li>)}</ul> : <p className="mt-4 text-body-regular text-text-tertiary">Only workspace members have access so far.</p>}
   </section>;

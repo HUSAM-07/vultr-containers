@@ -6,7 +6,7 @@ import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 
 export type Workspace = { id: string; name: string; role: "owner" | "admin" | "editor" | "viewer" };
-type Member = { githubId: number; login: string; role: Workspace["role"] };
+type Member = { githubId: number; login: string; role: Workspace["role"]; signedIn: number };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
@@ -72,10 +72,10 @@ export function WorkspaceAccountsPanel({ accounts, selectedId, onSelect, onCreat
     {error && <p role="alert" className="mt-3 text-caption-1-regular text-text-error-primary">{error}</p>}
     {canManage && <div className="mt-5 border-t border-separator-border pt-4">
       <h3 className="text-body-medium">Workspace members</h3>
-      <p className="mt-1 text-caption-1-regular text-text-tertiary">Members must sign in to Fava first. Removing one also revokes their project grants here.</p>
+      <p className="mt-1 text-caption-1-regular text-text-tertiary">Add a GitHub user before they sign in. Their access begins after GitHub sign-in; removing them also revokes their project grants here.</p>
       {members.length > 0 && <ul className="mt-3 grid gap-2">{members.map(member => <li key={member.githubId}
         className="flex items-center justify-between gap-2 text-caption-1-regular">
-        <span className="min-w-0 truncate">{member.login} · {member.role}</span>
+        <span className="min-w-0 truncate">{member.login} · {member.role}{!member.signedIn && " · Awaiting sign-in"}</span>
         {member.role !== "owner" && <Button variant="ghost" size="xs" disabled={busy}
           onClick={() => void change("remove", member)}>Remove</Button>}
       </li>)}</ul>}
