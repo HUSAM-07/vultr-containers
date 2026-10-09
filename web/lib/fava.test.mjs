@@ -8,7 +8,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { encryptToken } from "./fava-cloudflare.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
-import { createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
+import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { createSession, readSession, revokeSession, seal, unseal } from "./fava-session.ts";
@@ -89,6 +89,56 @@ test("new repositories are initialized for spec branches and names are validated
       body: { name: "new-project", private: true, auto_init: true } }]);
     await assert.rejects(createRepository("test-token", "owner", "../bad", true), /valid GitHub repository/);
     assert.equal(requests.length, 1);
+  } finally { globalThis.fetch = original; }
+});
+
+test("new personal repositories join an existing selected App installation", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), method: init.method });
+    if (init.method === "PUT") return new Response(null, { status: 204 });
+    return Response.json({ total_count: 2, installations: [
+      { id: 7, account: { login: "organization" }, target_type: "Organization", repository_selection: "selected" },
+      { id: 9, account: { login: "owner" }, target_type: "User", repository_selection: "selected" },
+    ] });
+  };
+  try {
+    assert.equal(await addCreatedRepositoryToInstallation("test-token", "OWNER", 42), true);
+    assert.deepEqual(requests.map(item => [item.method, item.url]), [
+      ["GET", "https://api.github.com/user/installations?per_page=100"],
+      ["PUT", "https://api.github.com/user/installations/9/repositories/42"],
+    ]);
+  } finally { globalThis.fetch = original; }
+});
+
+test("repository creation leaves other account installations untouched", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push(init.method);
+    return Response.json({ total_count: 1, installations: [
+      { id: 7, account: { login: "organization" }, target_type: "Organization", repository_selection: "selected" },
+    ] });
+  };
+  try {
+    assert.equal(await addCreatedRepositoryToInstallation("test-token", "owner", 42), false);
+    assert.deepEqual(requests, ["GET"]);
+  } finally { globalThis.fetch = original; }
+});
+
+test("all-repositories installation needs no extra GitHub write", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push(init.method);
+    return Response.json({ total_count: 1, installations: [
+      { id: 9, account: { login: "owner" }, target_type: "User", repository_selection: "all" },
+    ] });
+  };
+  try {
+    assert.equal(await addCreatedRepositoryToInstallation("test-token", "owner", 42), true);
+    assert.deepEqual(requests, ["GET"]);
   } finally { globalThis.fetch = original; }
 });
 

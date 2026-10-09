@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { accountAccess, cancelRun, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
-import { createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
+import { addCreatedRepositoryToInstallation, createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { chooseModel } from "@/lib/fava-models";
 import { refreshRunPreviews } from "@/lib/fava-run-previews";
@@ -106,6 +106,7 @@ export async function POST(request: NextRequest) {
       let project = null;
       let connectionError = null;
       try {
+        await addCreatedRepositoryToInstallation(auth.session.token, auth.session.user.login, created.id);
         const selected = (await listRepositories(auth.session.token)).find(item => item.id === created.id);
         if (selected) project = { ...await linkProject(env.DB, accountId, selected), accountId,
           accountName: account.name, role: account.role, accountRole: account.role };

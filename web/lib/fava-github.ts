@@ -89,7 +89,7 @@ export async function github<T>(token: string, path: string, method = "GET", bod
     const value = await response.json().catch(() => ({})) as { message?: unknown };
     throw new GitHubError(response.status, typeof value.message === "string" ? value.message : "GitHub request failed");
   }
-  return response.json() as Promise<T>;
+  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
 type GitHubRepo = { id: number; full_name: string; private: boolean; default_branch: string; html_url: string;
@@ -119,6 +119,19 @@ async function pages<T>(token: string, path: string, field: "installations" | "r
   }
   // shortcut: enumerate at most 2,000 installations or 2,000 repositories per installation; add server-side search for larger accounts.
   throw new GitHubError(422, "This GitHub account has too many repositories to list; narrow the App installation");
+}
+
+export async function addCreatedRepositoryToInstallation(token: string, owner: string, repositoryId: number) {
+  const installations = await pages<{ id: number; account: { login: string }; target_type: string;
+    repository_selection: string }>(token, "/user/installations", "installations", 20);
+  const installation = installations.find(item => item.target_type === "User" &&
+    item.account?.login?.toLowerCase() === owner.toLowerCase());
+  if (!installation) return false;
+  if (!Number.isSafeInteger(installation.id) || installation.id <= 0)
+    throw new GitHubError(502, "GitHub returned an invalid App installation");
+  if (installation.repository_selection === "selected")
+    await github<void>(token, `/user/installations/${installation.id}/repositories/${repositoryId}`, "PUT");
+  return true;
 }
 
 export async function listRepositories(token: string): Promise<Repository[]> {
