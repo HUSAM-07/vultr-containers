@@ -11,7 +11,7 @@
     "required": ["AI_GATEWAY_ACCOUNT_ID", "AI_GATEWAY_TOKEN", "GITHUB_APP_CLIENT_ID", "GITHUB_APP_PRIVATE_KEY", "FAVA_RUN_SECRET"]
   },
   "d1_databases": [
-    { "binding": "DB", "database_name": "fava-core", "database_id": "00000000-0000-0000-0000-000000000000" }
+    { "binding": "DB", "database_name": "fava-core", "database_id": "7d58c3df-31b0-40ef-823a-11b59bbe2a84" }
   ],
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "fava-run-artifacts" }],
   "containers": [
