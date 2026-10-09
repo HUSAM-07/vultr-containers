@@ -14,6 +14,7 @@ import { McpGrantsPanel } from "@/components/application/mcp-grants-panel";
 import { ProjectMembersPanel } from "@/components/application/project-members-panel";
 import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
+import { draftKey, initialSpec, readDraft } from "@/lib/fava-drafts";
 import { agentModels } from "@/lib/fava-models";
 import { cx } from "@/utils/cx";
 
@@ -27,8 +28,6 @@ type SpecProposal = { number: number; title: string; url: string; path: string; 
 type AgentRun = { id: string; status: string; model: string; provider: string; mergedCommitSha: string;
   specPullNumber: number; specPath: string; pullNumber: number | null; previewUrl: string | null;
   summary: string | null; error: string | null; artifactKey: string | null; publishingAt: number | null };
-
-const initialSpec = `## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test.\n`;
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
@@ -62,8 +61,14 @@ export default function WorkspacePage() {
   const initialized = useRef(false);
   const choiceId = useRef(0);
 
+  function restoreDraft(name: string) {
+    const draft = readDraft(key => localStorage.getItem(key), name);
+    setTitle(draft.title); setContent(draft.content); setModel(draft.model);
+  }
+
   const choose = useCallback(async (name: string, existing?: Project) => {
     const requestId = ++choiceId.current;
+    restoreDraft(name);
     setRepo(name); setContext(null); setSpecs([]); setRuns([]); setPublished(null); setError(""); setRunError(""); setBusy(true);
     try {
       const linked = existing || await json<Project>("/api/github?action=project", { method: "POST",
@@ -93,10 +98,8 @@ export default function WorkspacePage() {
       const draft = JSON.parse(localStorage.getItem("fava:draft") || "{}");
       if (typeof draft.repo === "string") savedRepo = draft.repo;
       queueMicrotask(() => {
-        if (typeof draft.title === "string") setTitle(draft.title);
-        if (typeof draft.content === "string") setContent(draft.content);
+        restoreDraft(savedRepo);
         if (savedRepo) setRepo(savedRepo);
-        if (agentModels.some(item => item.model === draft.model)) setModel(draft.model);
         setRestored(true);
       });
     } catch { queueMicrotask(() => setRestored(true)); }
@@ -110,13 +113,17 @@ export default function WorkspacePage() {
         const prior = linked.find(project => project.repository === savedRepo);
         setWorkspaceId(prior?.accountId || workspaces[0]?.id || "");
         if (prior && available.some(item => item.fullName === savedRepo)) await choose(savedRepo, prior);
-        else if (savedRepo) setRepo("");
+        else if (savedRepo) { restoreDraft(""); setRepo(""); }
       }
     }).catch(cause => setError((cause as Error).message));
   }, [choose]);
   useEffect(() => {
     if (!restored) return;
-    try { localStorage.setItem("fava:draft", JSON.stringify({ repo, title, content, model })); } catch { /* Local drafts are optional. */ }
+    try {
+      const draft = { title, content, model };
+      localStorage.setItem(draftKey(repo), JSON.stringify(draft));
+      localStorage.setItem("fava:draft", JSON.stringify({ repo, ...draft }));
+    } catch { /* Local drafts are optional. */ }
   }, [repo, title, content, model, restored]);
 
   useEffect(() => {
@@ -131,6 +138,7 @@ export default function WorkspacePage() {
 
   function selectWorkspace(id: string) {
     choiceId.current += 1;
+    restoreDraft("");
     setWorkspaceId(id); setRepo(""); setContext(null); setSpecs([]); setRuns([]);
     setPublished(null); setCreatedRepo(null); setBusy(false); setError(""); setRunError("");
   }

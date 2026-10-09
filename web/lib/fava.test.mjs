@@ -7,6 +7,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { encryptToken } from "./fava-cloudflare.ts";
+import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
@@ -16,6 +17,19 @@ import { createSession, readSession, revokeSession, seal, setSession, unseal } f
 import { appJwt, processAuthorizationRevocation, processInstallationLoss, processPullRequestEvent, verifyWebhookSignature } from "./fava-webhook.ts";
 
 const spec = "## Outcome\n\nPeople can export their dashboard in one click.\n\n## Scope\n\nAdd a CSV download for the current filtered view.\n\n## Acceptance criteria\n\n- The CSV includes exactly the visible rows and columns.\n";
+
+test("browser spec drafts remain scoped to their repository and migrate the prior draft", () => {
+  const values = new Map([
+    ["fava:draft", JSON.stringify({ repo: "one/project", title: "Original", content: spec, model: "claude-sonnet-5" })],
+    [draftKey("two/project"), JSON.stringify({ title: "Second", content: "Second spec", model: "unknown" })],
+  ]);
+  const getItem = key => values.get(key) || null;
+  assert.deepEqual(readDraft(getItem, "one/project"), { title: "Original", content: spec, model: "claude-sonnet-5" });
+  assert.deepEqual(readDraft(getItem, "two/project"), { title: "Second", content: "Second spec", model: "gpt-6-sol" });
+  assert.deepEqual(readDraft(getItem, "three/project"), { title: "", content: initialSpec, model: "gpt-6-sol" });
+  values.set(draftKey("one/project"), "{bad json");
+  assert.equal(readDraft(getItem, "one/project").title, "Original");
+});
 
 test("agent traces show completed Codex commands and Claude tools without inventing test results", () => {
   const codex = [
