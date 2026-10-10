@@ -6,6 +6,7 @@ import { GitHubError } from "@/lib/fava-github";
 import { CloudflareError, encryptToken } from "@/lib/fava-cloudflare";
 import { readJson } from "@/lib/fava-json";
 import { mcpServerUrl, mcpTools } from "@/lib/fava-mcp";
+import { discoverMcpTools } from "@/lib/fava-mcp-discovery";
 
 function fail(error: unknown) {
   const status = error instanceof GitHubError || error instanceof CloudflareError ? error.status : 502;
@@ -43,6 +44,21 @@ export async function POST(request: NextRequest) {
     if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string" ||
       !("action" in body) || typeof body.action !== "string") throw new GitHubError(400, "Invalid MCP grant request");
     const project = await projectAccess(env.DB, auth.session.user.id, body.repo, auth.session.token, "admin");
+    const bearerToken = "bearerToken" in body ? body.bearerToken : null;
+    if (bearerToken !== null && (typeof bearerToken !== "string" || bearerToken.length < 1 ||
+      bearerToken.length > 2_000 || /\s/.test(bearerToken)))
+      throw new GitHubError(400, "Enter a valid MCP bearer token");
+    if (body.action === "discover") {
+      let serverUrl: string;
+      try { serverUrl = mcpServerUrl("serverUrl" in body && typeof body.serverUrl === "string" ? body.serverUrl : ""); }
+      catch (error) { throw new GitHubError(400, (error as Error).message); }
+      let tools: Awaited<ReturnType<typeof discoverMcpTools>>;
+      try { tools = await discoverMcpTools(serverUrl, bearerToken); }
+      catch { throw new GitHubError(502, "Could not read tools from this MCP server. Check its URL and token, or enter tool names manually."); }
+      const response = NextResponse.json({ tools });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
     if (body.action === "add") {
       let serverUrl: string;
       let tools: string[];
@@ -50,10 +66,6 @@ export async function POST(request: NextRequest) {
         serverUrl = mcpServerUrl("serverUrl" in body && typeof body.serverUrl === "string" ? body.serverUrl : "");
         tools = mcpTools("allowedTools" in body ? body.allowedTools : null);
       } catch (error) { throw new GitHubError(400, (error as Error).message); }
-      const bearerToken = "bearerToken" in body ? body.bearerToken : null;
-      if (bearerToken !== null && (typeof bearerToken !== "string" || bearerToken.length < 1 ||
-        bearerToken.length > 2_000 || /\s/.test(bearerToken)))
-        throw new GitHubError(400, "Enter a valid MCP bearer token");
       const active = await list(project.id);
       if (active.length >= 8) throw new GitHubError(400, "Each project can connect at most eight MCP servers");
       if (active.some((grant: { serverUrl: string }) => grant.serverUrl === serverUrl))
