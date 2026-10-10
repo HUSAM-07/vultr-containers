@@ -14,6 +14,8 @@ GitHub sign-in creates a personal account in D1. Users can create team workspace
 
 Before publishing a spec PR, Fava checks that the App has a secure JSON webhook and subscribes to `pull_request` and `github_app_authorization`. Incomplete webhook setup blocks publication so a merge cannot silently miss its run.
 
+Editors can also write a new `.fava/skills/<name>.md` skill in the workspace. Fava opens a single-file GitHub pull request for review; after it merges, refresh the skills library and select it for one project or share it across the workspace. Skill proposals do not start implementation runs.
+
 ## Cloudflare Workers build
 
 From `web/`, run `npm run build:vinext` and `npm run start:vinext -- --host 127.0.0.1 --port 3001`. In another terminal, run `npm run db:migrate:local`; it applies the twelve D1 migrations when needed. This serves the built Worker and its simulated D1 database at `http://127.0.0.1:3001`. The connected Cloudflare account has the `fava-core` D1 database with all twelve migrations applied and the private `fava-run-artifacts` R2 bucket. The deployed web Worker has its GitHub/session secrets and uses both resources. The Next.js/Vercel build remains available for the Forge demo; Fava account storage runs on Cloudflare.

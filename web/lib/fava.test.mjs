@@ -13,7 +13,7 @@ import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewL
 import { authorizedLocalMcpGrant, localMcpCapability, localMcpGrants, readLocalMcpCapability } from "./fava-local-mcp.ts";
 import { appendCodeReference, draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
-import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
+import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSkill, publishSpec, readContextFile, validateSkillDraft, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { runEvents } from "./fava-run-events.ts";
@@ -442,6 +442,50 @@ test("publishing a spec creates a branch, file, and PR in that order", async () 
     assert.match(requests[3].url, /^https:\/\/api\.github\.com\/repos\/owner\/repo\/contents\/specs\/export-dashboard-[a-f0-9]{8}\.md$/);
     assert.match(Buffer.from(requests[3].body.content, "base64").toString(), /Résumé: ✓/);
     assert.equal(requests[4].body.base, "main");
+  } finally { globalThis.fetch = original; }
+});
+
+test("skill proposals validate instructions and create a single-file GitHub PR", async () => {
+  assert.throws(() => validateSkillDraft("../secrets", "Write useful instructions for the run"), /skill name/);
+  assert.throws(() => validateSkillDraft("review", "too short"), /20–12,000 bytes/);
+  assert.throws(() => validateSkillDraft("review", "x".repeat(12_001)), /20–12,000 bytes/);
+  const original = globalThis.fetch;
+  const requests = [];
+  const replies = [
+    { default_branch: "main", permissions: { push: true } },
+    { commit: { sha: "a".repeat(40) } },
+    { message: "Not Found" }, { ref: "created" }, { content: { path: ".fava/skills/review.md" } },
+    { html_url: "https://github.com/owner/repo/pull/5", number: 5 },
+  ];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), method: init.method, body: init.body ? JSON.parse(init.body) : null });
+    return Response.json(replies.shift(), { status: requests.length === 3 ? 404 : 200 });
+  };
+  try {
+    const result = await publishSkill("test-token", "owner/repo", "review", "Review every changed file against the spec.\n");
+    assert.deepEqual({ url: result.url, number: result.number, path: result.path },
+      { url: "https://github.com/owner/repo/pull/5", number: 5, path: ".fava/skills/review.md" });
+    assert.deepEqual(requests.map(item => item.method), ["GET", "GET", "GET", "POST", "PUT", "POST"]);
+    assert.match(requests[2].url, /\/contents\/\.fava\/skills\/review\.md\?ref=a{40}$/);
+    assert.match(requests[3].body.ref, /^refs\/heads\/skill\/review-[a-f0-9]{8}$/);
+    assert.match(requests[4].url, /\/contents\/\.fava\/skills\/review\.md$/);
+    assert.equal(Buffer.from(requests[4].body.content, "base64").toString(), "Review every changed file against the spec.\n");
+    assert.equal(requests[5].body.base, "main");
+  } finally { globalThis.fetch = original; }
+});
+
+test("existing skill name is rejected before a branch is created", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), method: init.method });
+    return Response.json(requests.length === 1 ? { default_branch: "main", permissions: { push: true } }
+      : requests.length === 2 ? { commit: { sha: "a".repeat(40) } } : { path: ".fava/skills/review.md" });
+  };
+  try {
+    await assert.rejects(publishSkill("test-token", "owner/repo", "review", "Review every changed file against the spec."),
+      /already exists/);
+    assert.deepEqual(requests.map(item => item.method), ["GET", "GET", "GET"]);
   } finally { globalThis.fetch = original; }
 });
 

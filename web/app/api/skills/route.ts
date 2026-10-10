@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
-import { github, GitHubError, listRepositories, listSkillFiles, parseRepo, readSkillFile, validSkillPath } from "@/lib/fava-github";
+import { github, GitHubError, listRepositories, listSkillFiles, parseRepo, publishSkill, readSkillFile, validSkillPath } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
 
@@ -34,12 +34,21 @@ export async function POST(request: NextRequest) {
   try {
     const auth = await readSession(request, env.DB);
     if (!auth) return NextResponse.json({ error: "Connect GitHub to continue" }, { status: 401 });
-    const body = await readJson(request, 2_000);
+    const body = await readJson(request, 50_000);
     if (!body || typeof body !== "object" || !("repo" in body) || typeof body.repo !== "string" ||
       !("action" in body) || typeof body.action !== "string") throw new GitHubError(400, "Invalid skill request");
     const project = await projectAccess(env.DB, auth.session.user.id, body.repo, auth.session.token, "editor");
     const accountId = project.accountId;
     const canManageWorkspace = project.accountRole === "owner" || project.accountRole === "admin";
+    if (body.action === "propose") {
+      if (!("name" in body) || typeof body.name !== "string" ||
+        !("content" in body) || typeof body.content !== "string")
+        throw new GitHubError(400, "Give the skill a name and instructions");
+      const proposal = await publishSkill(auth.session.token, project.repository, body.name, body.content);
+      const response = NextResponse.json(proposal, { status: 201 });
+      if (auth.refreshed) await setSession(response, request, auth.session);
+      return response;
+    }
     if (body.action === "remove") {
       if (!("id" in body) || typeof body.id !== "string" || !/^[a-f0-9-]{36}$/i.test(body.id))
         throw new GitHubError(400, "Choose a selected skill");

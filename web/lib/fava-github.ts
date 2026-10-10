@@ -18,6 +18,17 @@ export function validSkillPath(path: string) {
   return /^\.fava\/skills\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md$/.test(path);
 }
 
+export function validateSkillDraft(name: string, content: string) {
+  const cleanName = name.trim();
+  const cleanContent = content.trim();
+  if (!/^[a-z][a-z0-9-]{1,62}$/.test(cleanName))
+    throw new GitHubError(400, "Use a 2–63 character lowercase skill name with letters, numbers, and hyphens");
+  const size = new TextEncoder().encode(`${cleanContent}\n`).length;
+  if (size < 20 || size > 12_000)
+    throw new GitHubError(400, "Use 20–12,000 bytes of skill instructions");
+  return { name: cleanName, content: `${cleanContent}\n` };
+}
+
 export async function listSkillFiles(token: string, name: string, ref: string) {
   const repo = parseRepo(name);
   try {
@@ -244,5 +255,37 @@ export async function publishSpec(token: string, name: string, title: string, co
   } catch (error) {
     throw new GitHubError(error instanceof GitHubError ? error.status : 502,
       `Spec branch ${branch} was created, but publishing did not finish: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+}
+
+export async function publishSkill(token: string, name: string, skillName: string, content: string) {
+  const repo = parseRepo(name);
+  const skill = validateSkillDraft(skillName, content);
+  const metadata = await github<GitHubRepo>(token, `/repos/${repo}`);
+  if (!metadata.permissions?.push) throw new GitHubError(403, "Your GitHub account cannot push to this repository");
+  const base = metadata.default_branch;
+  const head = await github<{ commit: { sha: string } }>(token,
+    `/repos/${repo}/branches/${encodeURIComponent(base)}`);
+  const branch = `skill/${skill.name}-${crypto.randomUUID().slice(0, 8)}`;
+  const path = `.fava/skills/${skill.name}.md`;
+  try {
+    await github(token, `/repos/${repo}/contents/${path}?ref=${head.commit.sha}`);
+    throw new GitHubError(409, `Skill ${path} already exists in the default branch`);
+  } catch (error) {
+    if (!(error instanceof GitHubError) || error.status !== 404) throw error;
+  }
+  await github(token, `/repos/${repo}/git/refs`, "POST", { ref: `refs/heads/${branch}`, sha: head.commit.sha });
+  try {
+    await github(token, `/repos/${repo}/contents/${path}`, "PUT", {
+      message: `skill: ${skill.name}`, content: base64(skill.content), branch,
+    });
+    const pull = await github<{ html_url: string; number: number }>(token, `/repos/${repo}/pulls`, "POST", {
+      title: `skill: ${skill.name}`, head: branch, base,
+      body: `Add \`${path}\` to the Fava skills library. After merge, select it for a project or share it with the workspace.`,
+    });
+    return { url: pull.html_url, number: pull.number, branch, path };
+  } catch (error) {
+    throw new GitHubError(error instanceof GitHubError ? error.status : 502,
+      `Skill branch ${branch} was created, but publishing did not finish: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 }
