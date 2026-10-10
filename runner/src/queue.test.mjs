@@ -22,8 +22,10 @@ function fixture() {
   let task = { state: "running" };
   let stopped = false;
   let snapshotChanged = false;
+  const verified = [];
   const diff = "diff --git a/a b/a\n+new code\n";
   const sandbox = { async start(job) { starts.push(job); return "started"; },
+    async verifyLocal(...args) { verified.push(args); task = { state: "succeeded", result: args[3] }; return "started"; },
     async status() { return task; }, async logs() { return { stdout: "agent events", stderr: "" }; },
     async diff() { return diff; },
     async spec() { return "## Outcome\n\nBuild requested change.\n\n## Acceptance criteria\n\n- Add new code."; },
@@ -39,11 +41,14 @@ function fixture() {
       async run() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; } }; } },
     SANDBOX: { getByName(id) { assert.equal(id, runId); return sandbox; } },
     ARTIFACTS: { async put(key, body) { writes.set(key, body); },
-      async get(key) { const value = writes.get(key); return value === undefined ? null : { async text() { return value; } }; } },
+      async get(key) { const value = writes.get(key); if (value === undefined) return null;
+        const bytes = typeof value === "string" ? Buffer.from(value) : Buffer.from(value);
+        return { size: bytes.byteLength, async text() { return bytes.toString(); },
+          async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); } }; } },
     AI_GATEWAY_ACCOUNT_ID: "account", AI_GATEWAY_ID: "default", AI_GATEWAY_TOKEN: "gateway-token", GITHUB_APP_CLIENT_ID: "Iv1.test",
     GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }),
     FAVA_RUN_SECRET: "s".repeat(40) };
-  return { sqlite, env, starts, writes, setTask(value) { task = value; },
+  return { sqlite, env, starts, writes, verified, setTask(value) { task = value; },
     setSnapshotChanged(value) { snapshotChanged = value; }, wasStopped() { return stopped; } };
 }
 
@@ -108,6 +113,46 @@ test("cloud dispatch ignores a locally assigned run", async () => {
     assert.equal(starts.length, 0);
     assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "queued");
   } finally { sqlite.close(); }
+});
+
+test("submitted local diff reaches server review only after artifact hash verification", async () => {
+  const { sqlite, env, writes, verified } = fixture();
+  const original = globalThis.fetch;
+  try {
+    const patch = "diff --git a/a b/a\n+new code\n";
+    const input = JSON.stringify({ patch, summary: "Local change", stdout: "local log", stderr: "" });
+    const hash = createHash("sha256").update(input).digest("hex");
+    const lease = "22222222-2222-4222-8222-222222222222";
+    const key = `runs/${runId}/local-${lease}-${hash}.json`;
+    writes.set(key, input);
+    sqlite.prepare("UPDATE runs SET status = 'running', execution_mode = 'local', lease_id = ?, local_submission_key = ?, local_submission_sha256 = ?, local_submitted_at = ?, started_at = ? WHERE id = ?")
+      .run(lease, key, hash, Date.now(), Date.now(), runId);
+    sqlite.exec("UPDATE specs SET execution_mode = 'local'");
+    globalThis.fetch = async url => {
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false,
+        unmet: ["Acceptance criterion needs more work"], unrelated: [], evidence: [] }) } }] });
+    };
+    await reconcile(env);
+    assert.equal(verified.length, 1);
+    assert.equal(verified[0][1], hash);
+    assert.equal(verified[0][2], patch);
+    assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, false);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+  const tampered = fixture();
+  try {
+    const hash = "a".repeat(64);
+    const lease = "22222222-2222-4222-8222-222222222222";
+    const key = `runs/${runId}/local-${lease}-${hash}.json`;
+    tampered.writes.set(key, JSON.stringify({ patch: "diff --git a/a b/a\n+unsafe\n", summary: "Unreviewed", stdout: "", stderr: "" }));
+    tampered.sqlite.prepare("UPDATE runs SET status = 'running', execution_mode = 'local', lease_id = ?, local_submission_key = ?, local_submission_sha256 = ?, local_submitted_at = ?, started_at = ? WHERE id = ?")
+      .run(lease, key, hash, Date.now(), Date.now(), runId);
+    await reconcile(tampered.env);
+    assert.equal(tampered.verified.length, 0);
+    assert.match(tampered.sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /changed after acceptance/);
+  } finally { tampered.sqlite.close(); }
 });
 
 test("dispatch passes only active project grants pinned to the run", async () => {

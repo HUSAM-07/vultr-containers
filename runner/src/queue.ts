@@ -2,12 +2,15 @@ import { chooseModel } from "../../web/lib/fava-models.ts";
 import { publishImplementation } from "./publish.ts";
 import { loadRunSkills } from "./skills.ts";
 import { parseConformanceReport, ReviewError, reviewConformance } from "./conformance.ts";
+import { LocalPatchError } from "./local-patch.ts";
 import type { AgentSandbox } from "./sandbox";
 import type { Env, RunJob } from "./types";
 
 type RunRow = { id: string; repository: string; repositoryId: number; installationId: number;
   sha: string; specPath: string; provider: string; model: string };
-type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number };
+type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number;
+  executionMode: "cloud" | "local"; localSubmissionKey: string | null;
+  localSubmissionSha256: string | null; leaseId: string | null };
 
 async function queued(env: Env) {
   const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND runs.execution_mode = 'cloud' AND projects.installation_id > 0 AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
@@ -16,7 +19,7 @@ async function queued(env: Env) {
 }
 
 async function running(env: Env) {
-  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' AND runs.execution_mode = 'cloud' ORDER BY runs.created_at LIMIT 10")
+  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, runs.execution_mode AS executionMode, runs.local_submission_key AS localSubmissionKey, runs.local_submission_sha256 AS localSubmissionSha256, runs.lease_id AS leaseId, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' AND (runs.execution_mode = 'cloud' OR (runs.execution_mode = 'local' AND runs.local_submitted_at IS NOT NULL)) ORDER BY runs.created_at LIMIT 10")
     .all<RunningRow>();
   return result.results;
 }
@@ -44,6 +47,28 @@ async function loadRunMcpGrants(env: Env, runId: string) {
   return result.results.map(grant => grant.id);
 }
 
+async function localSubmission(env: Env, run: RunningRow) {
+  const { id, leaseId, localSubmissionKey: key, localSubmissionSha256: hash } = run;
+  if (!leaseId || !hash || !key || key !== `runs/${id}/local-${leaseId}-${hash}.json`)
+    throw new LocalPatchError("Local submission reference is invalid");
+  const object = await env.ARTIFACTS.get(key);
+  if (!object || object.size > 1_250_000) throw new LocalPatchError("Local submission artifact is missing or too large");
+  const bytes = await object.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  if (actual !== hash) throw new LocalPatchError("Local submission artifact changed after acceptance");
+  let input: unknown;
+  try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw new LocalPatchError("Local submission artifact is invalid JSON"); }
+  if (!input || typeof input !== "object" || !("patch" in input) || typeof input.patch !== "string" ||
+    !("summary" in input) || typeof input.summary !== "string" ||
+    !("stdout" in input) || typeof input.stdout !== "string" ||
+    !("stderr" in input) || typeof input.stderr !== "string" || !input.patch.startsWith("diff --git ") ||
+    input.patch.length > 1_000_000 || input.stdout.length > 100_000 || input.stderr.length > 100_000)
+    throw new LocalPatchError("Local submission artifact has invalid content");
+  return input as { patch: string; summary: string; stdout: string; stderr: string };
+}
+
 export async function reconcile(env: Env) {
   // shortcut: cancellation stops the container on the next minute tick; use a queue for immediate stops.
   const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND execution_mode = 'cloud' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member') AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
@@ -59,6 +84,15 @@ export async function reconcile(env: Env) {
     const { id, startedAt } = run;
     const sandbox = env.SANDBOX.getByName(id);
     try {
+      if (run.executionMode === "local") {
+        const input = await localSubmission(env, run);
+        const model = chooseModel(run.model);
+        if (model.provider !== run.provider) throw new LocalPatchError("Local run model changed");
+        await sandbox.verifyLocal({ id, repository: run.repository, repositoryId: run.repositoryId,
+          installationId: run.installationId, sha: run.sha, specPath: run.specPath,
+          provider: model.provider, model: model.model, skills: "", mcpGrantIds: [] },
+        run.localSubmissionSha256!, input.patch, input.summary, input.stdout, input.stderr);
+      }
       const status = await sandbox.status();
       if (status.state === "running") {
         if (startedAt && Date.now() - startedAt > 45 * 60_000) {
@@ -114,9 +148,13 @@ export async function reconcile(env: Env) {
       await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, implementation_sha = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
         .bind(status.result.slice(0, 2000), prefix, published.branch, published.sha, published.pullNumber, Date.now(), id).run();
     } catch (error) {
-      console.error("Run reconciliation failed", id, error);
-      if (startedAt && Date.now() - startedAt > 45 * 60_000)
-        await fail(env, id, "Runner could not recover within 45 minutes");
+      if (error instanceof LocalPatchError)
+        await fail(env, id, error.message);
+      else {
+        console.error("Run reconciliation failed", id, error);
+        if (startedAt && Date.now() - startedAt > 45 * 60_000)
+          await fail(env, id, "Runner could not recover within 45 minutes");
+      }
     }
   }
 }

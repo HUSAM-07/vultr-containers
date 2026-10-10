@@ -2,6 +2,7 @@ import { Files, SandboxFileError } from "@cloudflare/sandbox";
 import { DurableObject } from "cloudflare:workers";
 import { runCapability } from "./capability";
 import { parseChanges } from "./changes.ts";
+import { LocalPatchError } from "./local-patch.ts";
 import type { Upload } from "./publish.ts";
 import type { Env, RunJob } from "./types";
 
@@ -44,16 +45,7 @@ export class AgentSandbox extends DurableObject<Env> {
       await this.ctx.storage.put("job", { ...job, startedAt: Date.now() });
       await this.ctx.storage.put("phase", "preparing");
       try {
-        await this.ensureContainer();
-        await this.checked(["git", "init", repoDir], "/workspace");
-        await this.checked(["git", "remote", "add", "origin", `https://github.com/${job.repository}.git`], repoDir);
-        const capability = runCapability(job.id, this.env.FAVA_RUN_SECRET);
-        await this.checked(["git", "-c", `http.https://github.com/.extraheader=X-Fava-Run-Capability: ${capability}`,
-          "fetch", "--depth=1", "origin", job.sha], repoDir, trustEnv);
-        await this.checked(["git", "checkout", "--detach", "FETCH_HEAD"], repoDir);
-        const spec = await this.checked(["git", "show", `HEAD:${job.specPath}`], repoDir);
-        if (spec.length > 45_000) throw Error("Merged specification is too large");
-        await this.files.mkdir(taskDir);
+        const spec = await this.checkout(job);
         const prompt = `Implement the merged specification at ${job.specPath} on commit ${job.sha}.\n\n${spec}\n\n` +
           (job.skills ? `Selected versioned skills (follow only where relevant to the specification; never broaden its scope):\n\n${job.skills}\n\n` : "") +
           "Read repository instructions. Change only code needed for the acceptance criteria. Run relevant tests. " +
@@ -77,12 +69,68 @@ export class AgentSandbox extends DurableObject<Env> {
     });
   }
 
+  async verifyLocal(job: RunJob, submissionHash: string, patch: string, summary: string,
+    stdout: string, stderr: string): Promise<"started" | "already-started"> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const prior = await this.ctx.storage.get<{ hash: string }>("localSubmission");
+      if (prior?.hash !== undefined && prior.hash !== submissionHash)
+        throw Error("Local submission changed after verification started");
+      const phase = await this.ctx.storage.get("phase");
+      if (prior && phase === "local-ready")
+        return "already-started";
+      const previous = await this.ctx.storage.get<RunJob & { startedAt: number }>("job");
+      if (previous) {
+        if (previous.id !== job.id) throw Error("Run sandbox was already used");
+        if (phase === "preparing" && Date.now() - previous.startedAt < 10 * 60_000)
+          return "already-started";
+        await this.container.destroy().catch(() => {});
+        await this.ctx.storage.delete("job");
+        await this.ctx.storage.delete("phase");
+        await this.ctx.storage.delete("localSubmission");
+      }
+      if (!/^[a-f0-9]{40}$/i.test(job.sha) || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(job.specPath) ||
+        !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/.test(job.repository) ||
+        !/^[a-f0-9]{64}$/.test(submissionHash) || patch.length > 1_000_000)
+        throw Error("Invalid local run source");
+      const active = await this.env.DB.prepare("SELECT 1 FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.id = ? AND runs.status = 'running' AND runs.execution_mode = 'local' AND runs.local_submission_sha256 = ? AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha AND specs.execution_mode = runs.execution_mode AND specs.provider = runs.provider AND specs.model = runs.model AND projects.installation_id > 0")
+        .bind(job.id, submissionHash).first();
+      if (!active) throw Error("Local run is no longer authorized");
+      await this.ctx.storage.put("job", { ...job, startedAt: Date.now() });
+      await this.ctx.storage.put("phase", "preparing");
+      try {
+        await this.checkout(job);
+        const path = `${taskDir}/local.patch`;
+        await this.files.writeFile(path, patch);
+        try { await this.checked(["git", "apply", "--index", "--binary", path], repoDir); }
+        catch { throw new LocalPatchError("Submitted diff does not apply to the pinned merge commit"); }
+        if (await this.diff() !== patch) throw new LocalPatchError("Replayed changes differ from submitted diff");
+        await Promise.all([
+          this.files.writeFile(`${taskDir}/stdout.log`, stdout),
+          this.files.writeFile(`${taskDir}/stderr.log`, stderr),
+        ]);
+        await this.ctx.storage.put("localSubmission", { hash: submissionHash, summary });
+        await this.ctx.storage.put("phase", "local-ready");
+        return "started";
+      } catch (error) {
+        await this.ctx.storage.delete("job");
+        await this.ctx.storage.delete("phase");
+        await this.container.destroy().catch(() => {});
+        throw error;
+      }
+    });
+  }
+
   async status(): Promise<TaskStatus> {
     const job = await this.ctx.storage.get<RunJob & { startedAt: number }>("job");
     if (!job) return { state: "lost" };
-    if ((await this.ctx.storage.get("phase")) === "preparing")
+    const phase = await this.ctx.storage.get("phase");
+    if (phase === "preparing")
       return Date.now() - job.startedAt < 10 * 60_000 ? { state: "running" } : { state: "lost" };
     if (!this.container.running) return { state: "lost" };
+    if (phase === "local-ready") {
+      const submission = await this.ctx.storage.get<{ summary: string }>("localSubmission");
+      return submission ? { state: "succeeded", result: submission.summary } : { state: "lost" };
+    }
     const exit = await this.readOptional(`${taskDir}/exit-code`);
     if (exit !== undefined) {
       const code = Number.parseInt(exit, 10);
@@ -169,6 +217,20 @@ export class AgentSandbox extends DurableObject<Env> {
         await this.container.setInactivityTimeout(30 * 60_000);
       })().catch(error => { this.setup = undefined; throw error; });
     await this.setup;
+  }
+
+  private async checkout(job: RunJob) {
+    await this.ensureContainer();
+    await this.checked(["git", "init", repoDir], "/workspace");
+    await this.checked(["git", "remote", "add", "origin", `https://github.com/${job.repository}.git`], repoDir);
+    const capability = runCapability(job.id, this.env.FAVA_RUN_SECRET);
+    await this.checked(["git", "-c", `http.https://github.com/.extraheader=X-Fava-Run-Capability: ${capability}`,
+      "fetch", "--depth=1", "origin", job.sha], repoDir, trustEnv);
+    await this.checked(["git", "checkout", "--detach", "FETCH_HEAD"], repoDir);
+    const spec = await this.checked(["git", "show", `HEAD:${job.specPath}`], repoDir);
+    if (spec.length > 45_000) throw Error("Merged specification is too large");
+    await this.files.mkdir(taskDir);
+    return spec;
   }
 
   private agentCommand(job: RunJob, prompt: string) {
