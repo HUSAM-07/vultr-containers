@@ -40,6 +40,12 @@ export function RunReview({ id }: { id: string }) {
               {review[kind].map((item, index) => <li key={index}>{item}</li>)}
             </List>
           </section>})}
+        {review.fileEvidence.length > 0 && <section>
+          <h4 className="text-caption-1-semibold text-text-secondary">Changed file reasons</h4>
+          <ul className="mt-2 space-y-1 ps-5 text-caption-1-regular text-text-secondary list-disc">
+            {review.fileEvidence.map(item => <li key={item.path}><code>{item.path}</code> · criterion {item.criterion}: {item.reason}</li>)}
+          </ul>
+        </section>}
         <a href={`/api/github/runs/${id}/artifact?kind=review`} target="_blank" rel="noreferrer"
           className="inline-block text-caption-1-semibold text-accent-600 hover:underline">Raw report</a>
       </>}

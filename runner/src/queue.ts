@@ -2,6 +2,8 @@ import { chooseModel } from "../../web/lib/fava-models.ts";
 import { publishImplementation } from "./publish.ts";
 import { loadRunSkills } from "./skills.ts";
 import { parseConformanceReport, ReviewError, reviewConformance } from "./conformance.ts";
+import { acceptanceCriteria } from "../../web/lib/fava-criteria.ts";
+import { verifyConformanceCoverage } from "../../web/lib/fava-review.ts";
 import { LocalPatchError } from "./local-patch.ts";
 import type { AgentSandbox } from "./sandbox";
 import type { Env, RunJob } from "./types";
@@ -115,6 +117,7 @@ export async function reconcile(env: Env) {
       await env.ARTIFACTS.put(`${prefix}/diff.patch`, diff, { httpMetadata: { contentType: "text/x-diff; charset=utf-8" } });
       const diffHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(diff))),
         byte => byte.toString(16).padStart(2, "0")).join("");
+      const files = await sandbox.changes(diffHash);
       let review;
       try {
         const savedReview = await env.ARTIFACTS.get(`${prefix}/review.json`);
@@ -128,7 +131,9 @@ export async function reconcile(env: Env) {
           catch { throw new ReviewError("Saved spec review is invalid"); }
         }
         if (cached && cached.diffSha256 !== diffHash) throw new ReviewError("Spec review source changed after the first review");
-        review = cached ? parseConformanceReport(cached) : await reviewConformance(env, run, await sandbox.spec(), diff);
+        const spec = await sandbox.spec();
+        review = cached ? parseConformanceReport(cached) : await reviewConformance(env, run, spec, diff, files.map(file => file.path));
+        if (cached) verifyConformanceCoverage(review, acceptanceCriteria(spec).length, files.map(file => file.path));
         if (!cached) await env.ARTIFACTS.put(`${prefix}/review.json`, JSON.stringify({ ...review, diffSha256: diffHash }),
           { httpMetadata: { contentType: "application/json; charset=utf-8" } });
       } catch (error) {
@@ -140,7 +145,6 @@ export async function reconcile(env: Env) {
         await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
         continue;
       }
-      const files = await sandbox.changes(diffHash);
       const publishing = await env.DB.prepare("UPDATE runs SET publishing_at = COALESCE(publishing_at, ?) WHERE id = ? AND status = 'running'")
         .bind(Date.now(), id).run();
       if (publishing.meta.changes !== 1) continue;

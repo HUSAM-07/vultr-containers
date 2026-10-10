@@ -10,7 +10,8 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const env = { GITHUB_APP_CLIENT_ID: "Iv1.test", GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }) };
 const run = { id, repository: "owner/private", repositoryId: 42, installationId: 7,
   sha: base, defaultBranch: "main", specPath: "specs/change.md", specPullNumber: 4 };
-const review = { pass: true, unmet: [], unrelated: [], evidence: ["The export action was added"] };
+const review = { pass: true, unmet: [], unrelated: [], evidence: ["The export action was added"],
+  fileEvidence: [{ path: "src/a.ts", criterion: 1, reason: "Adds the export action" }] };
 
 test("new draft PR includes model-generated spec evidence without claiming tests passed", async () => {
   const original = globalThis.fetch;

@@ -59,7 +59,8 @@ test("only a merged spec claims a run, once, then stores its diff and logs", asy
     globalThis.fetch = async (url, options) => {
       const path = new URL(url).pathname;
       if (path.endsWith("/ai/v1/chat/completions")) return Response.json({ choices: [{ message: {
-        content: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Code changed for the requested criterion"] }) } }] });
+        content: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Code changed for the requested criterion"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
       if (path === "/app/installations/7/access_tokens") return Response.json({ token: "publisher" });
       if (path.endsWith(`/git/ref/heads/impl/${runId}`)) return new Response(null, { status: 404 });
       if (path.endsWith(`/git/commits/${"a".repeat(40)}`)) return Response.json({ tree: { sha: "b".repeat(40) } });
@@ -131,7 +132,7 @@ test("submitted local diff reaches server review only after artifact hash verifi
     globalThis.fetch = async url => {
       assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
       return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false,
-        unmet: ["Acceptance criterion needs more work"], unrelated: [], evidence: [] }) } }] });
+        unmet: ["Acceptance criterion needs more work"], unrelated: [], evidence: [], fileEvidence: [] }) } }] });
     };
     await reconcile(env);
     assert.equal(verified.length, 1);
@@ -196,7 +197,7 @@ test("spec review rejects unrelated changes before GitHub publication", async ()
     globalThis.fetch = async (url) => {
       assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
       return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false, unmet: [],
-        unrelated: ["Billing file is outside the export spec"], evidence: [] }) } }] });
+        unrelated: ["Billing file is outside the export spec"], evidence: [], fileEvidence: [] }) } }] });
     };
     await dispatch(env);
     setTask({ state: "succeeded", result: "Completed" });
@@ -218,7 +219,8 @@ test("a changed staged snapshot cannot reach GitHub publication", async () => {
     globalThis.fetch = async url => {
       if (new URL(url).pathname.endsWith("/ai/v1/chat/completions"))
         return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true,
-          unmet: [], unrelated: [], evidence: ["Requested code change"] }) } }] });
+          unmet: [], unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
       githubWrites++;
       throw Error("Unreviewed code must not reach GitHub");
     };
@@ -242,7 +244,8 @@ test("publication retries reuse the review for the same diff", async () => {
       if (new URL(url).pathname.endsWith("/ai/v1/chat/completions")) {
         reviews++;
         return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
-          unrelated: [], evidence: ["Requested code change"] }) } }] });
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
       }
       throw Error("GitHub is temporarily unavailable");
     };
@@ -253,6 +256,33 @@ test("publication retries reuse the review for the same diff", async () => {
     assert.equal(reviews, 1);
     assert.match(JSON.parse(writes.get(`runs/${runId}/review.json`)).diffSha256, /^[a-f0-9]{64}$/);
     assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "running");
+  } finally { globalThis.fetch = original; console.error = originalError; sqlite.close(); }
+});
+
+test("a cached review missing changed-file coverage cannot publish", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  const originalError = console.error;
+  let githubWrites = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions"))
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      githubWrites++;
+      throw Error("GitHub is temporarily unavailable");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const key = `runs/${runId}/review.json`;
+    writes.set(key, JSON.stringify({ ...JSON.parse(writes.get(key)), fileEvidence: [] }));
+    const priorWrites = githubWrites;
+    await reconcile(env);
+    assert.equal(githubWrites, priorWrites);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
   } finally { globalThis.fetch = original; console.error = originalError; sqlite.close(); }
 });
 
@@ -335,7 +365,8 @@ test("member cancellation stops a running agent and prevents a late implementati
         sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'Cancellation requested by project member', completed_at = 2 WHERE id = ?")
           .run(runId);
         return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
-          unrelated: [], evidence: ["Requested code change"] }) } }] });
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
       }
       githubWrites++;
       throw Error("Cancelled run must not reach GitHub");
