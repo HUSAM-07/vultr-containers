@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { agentEnvironment, createClient, localMcpConfiguration, runClaim, runProcess, serverOrigin, validateJob } from "./fava.mjs";
 
 const job = { id: "11111111-1111-4111-8111-111111111111", leaseId: "22222222-2222-4222-8222-222222222222",
@@ -72,4 +76,47 @@ test("a local run requests its pinned skills before cloning", async () => {
     return body.action === "skills" ? { skills: "" } : { status: "failed" };
   }), /invalid pinned skills/);
   assert.deepEqual(actions, ["skills", "fail"]);
+});
+
+test("a claimed run checks out its pinned commit and submits only its staged change", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fava-companion-test-"));
+  const source = join(root, "source");
+  const bin = join(root, "bin");
+  const previous = Object.fromEntries(["PATH", "FAVA_DEVICE_TOKEN", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].map(name => [name, process.env[name]]));
+  try {
+    await mkdir(join(source, "specs"), { recursive: true });
+    await mkdir(bin);
+    execFileSync("git", ["init", "-q", source]);
+    execFileSync("git", ["-C", source, "config", "user.name", "Fava Test"]);
+    execFileSync("git", ["-C", source, "config", "user.email", "test@example.invalid"]);
+    await writeFile(join(source, "specs", "change.md"), "## Outcome\nAdd an outcome file.\n");
+    execFileSync("git", ["-C", source, "add", "specs/change.md"]);
+    execFileSync("git", ["-C", source, "commit", "-qm", "Add specification"]);
+    const sha = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    await writeFile(join(source, "newer.txt"), "outside the pinned commit\n");
+    execFileSync("git", ["-C", source, "add", "newer.txt"]);
+    execFileSync("git", ["-C", source, "commit", "-qm", "Add later change"]);
+    const fakeCodex = join(bin, "codex");
+    await writeFile(fakeCodex, `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.env.FAVA_DEVICE_TOKEN || fs.existsSync("newer.txt")) process.exit(8);\nfs.writeFileSync("outcome.txt", "implemented\\n");\nconst args = process.argv;\nfs.writeFileSync(args[args.indexOf("--output-last-message") + 1], "Added the outcome file.");\n`);
+    await chmod(fakeCodex, 0o755);
+    process.env.PATH = `${bin}:${previous.PATH || ""}`;
+    process.env.FAVA_DEVICE_TOKEN = `fava_dev_${"x".repeat(43)}`;
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = `url.file://${source}.insteadOf`;
+    process.env.GIT_CONFIG_VALUE_0 = "https://github.com/owner/repo.git";
+    const actions = [];
+    const client = async body => { actions.push(body); return { status: "accepted" }; };
+    client.origin = "https://fava.example";
+    assert.deepEqual(await runClaim({ ...job, sha }, client), { submitted: true, runId: job.id });
+    assert.deepEqual(actions.map(action => action.action), ["submit"]);
+    assert.match(actions[0].patch, /\+implemented/);
+    assert.match(actions[0].patch, /\+\+\+ b\/outcome\.txt/);
+    assert.doesNotMatch(actions[0].patch, /newer\.txt|specs\/change\.md/);
+    assert.equal(actions[0].summary, "Added the outcome file.");
+  } finally {
+    for (const [name, value] of Object.entries(previous))
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    await rm(root, { recursive: true, force: true });
+  }
 });
