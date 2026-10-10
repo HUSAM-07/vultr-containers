@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { readSession, setSession } from "@/lib/fava-session";
-import { github, GitHubError, listRepositories, listSkillFiles, parseRepo, publishSkill, readSkillFile, validSkillPath } from "@/lib/fava-github";
+import { GitHubError, latestSkillCommit, listRepositories, listSkillFiles, publishSkill, validSkillPath } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { projectAccess } from "@/lib/fava-db";
 
@@ -49,16 +49,26 @@ export async function POST(request: NextRequest) {
       if (auth.refreshed) await setSession(response, request, auth.session);
       return response;
     }
-    if (body.action === "remove") {
+    if (body.action === "remove" || body.action === "refresh") {
       if (!("id" in body) || typeof body.id !== "string" || !/^[a-f0-9-]{36}$/i.test(body.id))
         throw new GitHubError(400, "Choose a selected skill");
-      const skill = await env.DB.prepare("SELECT project_id AS projectId FROM skills WHERE id = ? AND account_id = ?")
-        .bind(body.id, accountId).first<{ projectId: string | null }>();
+      const skill = await env.DB.prepare("SELECT project_id AS projectId, source_repo_id AS sourceRepoId, path FROM skills WHERE id = ? AND account_id = ? AND active = 1")
+        .bind(body.id, accountId).first<{ projectId: string | null; sourceRepoId: number; path: string }>();
       if (!skill || skill.projectId && skill.projectId !== project.id ||
         skill.projectId === null && !canManageWorkspace)
-        throw new GitHubError(403, "You cannot remove this skill");
-      await env.DB.prepare("UPDATE skills SET active = 0 WHERE id = ? AND account_id = ?")
-        .bind(body.id, accountId).run();
+        throw new GitHubError(403, "You cannot manage this skill");
+      if (body.action === "remove") {
+        await env.DB.prepare("UPDATE skills SET active = 0 WHERE id = ? AND account_id = ?")
+          .bind(body.id, accountId).run();
+      } else {
+        if (skill.sourceRepoId !== project.githubRepoId)
+          throw new GitHubError(403, "Open the skill's source project to refresh its version");
+        const repository = (await listRepositories(auth.session.token)).find(item => item.id === skill.sourceRepoId);
+        if (!repository) throw new GitHubError(403, "The Fava GitHub App no longer has access to this repository");
+        const sha = await latestSkillCommit(auth.session.token, repository.fullName, skill.path, repository.defaultBranch);
+        await env.DB.prepare("UPDATE skills SET commit_sha = ? WHERE id = ? AND account_id = ? AND active = 1")
+          .bind(sha, body.id, accountId).run();
+      }
     } else if (body.action === "add") {
       if (!("path" in body) || typeof body.path !== "string" || !validSkillPath(body.path) ||
         !("scope" in body) || (body.scope !== "project" && body.scope !== "workspace"))
@@ -80,11 +90,9 @@ export async function POST(request: NextRequest) {
             .bind(accountId).first<{ count: number }>();
         if ((count?.count || 0) >= 8) throw new GitHubError(400, "Each project can use at most eight selected skills");
       }
-      const branch = await github<{ commit: { sha: string } }>(auth.session.token,
-        `/repos/${parseRepo(name)}/branches/${encodeURIComponent(project.defaultBranch)}`);
-      await readSkillFile(auth.session.token, name, body.path, branch.commit.sha);
+      const sha = await latestSkillCommit(auth.session.token, name, body.path, repository.defaultBranch);
       await env.DB.prepare("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT DO UPDATE SET commit_sha = excluded.commit_sha, active = 1")
-        .bind(crypto.randomUUID(), accountId, scopedProject, repository.id, body.path, branch.commit.sha).run();
+        .bind(crypto.randomUUID(), accountId, scopedProject, repository.id, body.path, sha).run();
     } else throw new GitHubError(400, "Invalid skill action");
     const response = NextResponse.json({ ok: true });
     if (auth.refreshed) await setSession(response, request, auth.session);

@@ -58,6 +58,15 @@ export async function readSkillFile(token: string, name: string, path: string, s
   } catch { throw new GitHubError(400, "Skill file must contain valid UTF-8 Markdown"); }
 }
 
+export async function latestSkillCommit(token: string, name: string, path: string, branch: string) {
+  const head = await github<{ commit: { sha: string } }>(token,
+    `/repos/${parseRepo(name)}/branches/${encodeURIComponent(branch)}`);
+  const sha = head?.commit?.sha;
+  if (!/^[a-f0-9]{40}$/i.test(sha || "")) throw new GitHubError(502, "GitHub returned an invalid skill commit");
+  await readSkillFile(token, name, path, sha);
+  return sha;
+}
+
 export function slug(title: string) {
   const value = title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 55).replace(/-$/, "");
   if (!value) throw new GitHubError(400, "Give the specification a descriptive title");

@@ -14,7 +14,7 @@ GitHub sign-in creates a personal account in D1. Users can create team workspace
 
 Before publishing a spec PR, Fava checks that the App has a secure JSON webhook and subscribes to `pull_request` and `github_app_authorization`. Incomplete webhook setup blocks publication so a merge cannot silently miss its run.
 
-Editors can also write a new `.fava/skills/<name>.md` skill in the workspace. Fava opens a single-file GitHub pull request for review; after it merges, refresh the skills library and select it for one project or share it across the workspace. Skill proposals do not start implementation runs.
+Editors can also write a new `.fava/skills/<name>.md` skill in the workspace. Fava opens a single-file GitHub pull request for review; after it merges, refresh the skills library and select it for one project or share it across the workspace. When a selected skill changes on GitHub, use **Use latest version** in its source project to adopt the new commit for future runs. Skill proposals do not start implementation runs.
 
 ## Cloudflare Workers build
 

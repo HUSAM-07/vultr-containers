@@ -13,7 +13,7 @@ import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewL
 import { authorizedLocalMcpGrant, localMcpCapability, localMcpGrants, readLocalMcpCapability } from "./fava-local-mcp.ts";
 import { appendCodeReference, draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
-import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSkill, publishSpec, readContextFile, validateSkillDraft, validateSpec, validSkillPath } from "./fava-github.ts";
+import { addCreatedRepositoryToInstallation, createRepository, importContext, latestSkillCommit, listRepositories, listSpecPullRequests, publishSkill, publishSpec, readContextFile, validateSkillDraft, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
 import { chooseModel } from "./fava-models.ts";
 import { runEvents } from "./fava-run-events.ts";
@@ -638,6 +638,25 @@ test("skill paths are constrained to versioned repository Markdown files", () =>
   assert.equal(validSkillPath(".fava/skills/review.md"), true);
   assert.equal(validSkillPath(".fava/skills/../secrets.md"), false);
   assert.equal(validSkillPath("specs/review.md"), false);
+});
+
+test("updating a selected skill validates the file at the latest GitHub commit", async () => {
+  const original = globalThis.fetch;
+  const sha = "b".repeat(40);
+  const content = "Review changed files against the merged spec.\n";
+  const requests = [];
+  globalThis.fetch = async url => {
+    requests.push(String(url));
+    return Response.json(requests.length === 1 ? { commit: { sha } }
+      : { content: Buffer.from(content).toString("base64"), encoding: "base64", size: Buffer.byteLength(content) });
+  };
+  try {
+    assert.equal(await latestSkillCommit("test-token", "owner/repo", ".fava/skills/review.md", "main"), sha);
+    assert.deepEqual(requests, [
+      "https://api.github.com/repos/owner/repo/branches/main",
+      `https://api.github.com/repos/owner/repo/contents/.fava/skills/review.md?ref=${sha}`,
+    ]);
+  } finally { globalThis.fetch = original; }
 });
 
 test("JSON reader rejects malformed and streamed oversized bodies", async () => {
