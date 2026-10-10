@@ -11,7 +11,7 @@ import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice, requireLocalRunReady } from "./fava-devices.ts";
 import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { authorizedLocalMcpGrant, localMcpCapability, localMcpGrants, readLocalMcpCapability } from "./fava-local-mcp.ts";
-import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
+import { appendCodeReference, draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
@@ -35,6 +35,21 @@ test("browser spec drafts remain scoped to their repository and migrate the prio
   assert.equal(readDraft(getItem, "two/project").executionMode, "local");
   values.set(draftKey("one/project"), "{bad json");
   assert.equal(readDraft(getItem, "one/project").title, "Original");
+});
+
+test("code grabs pin the exact file and selected lines in the spec", () => {
+  const sha = "a".repeat(40);
+  const withFile = appendCodeReference(spec, "owner/repo", sha, "src/a (1).ts");
+  assert.match(withFile, new RegExp(`https://github.com/owner/repo/blob/${sha}/src/a%20%281%29.ts`));
+  const withSelection = appendCodeReference(withFile, "owner/repo", sha, "src/a (1).ts",
+    { startLine: 12, endLine: 13, text: "const x = 1;\nreturn x;" });
+  assert.match(withSelection, /#L12-L13/);
+  assert.match(withSelection, /> const x = 1;\n> return x;/);
+  assert.equal(withSelection.match(/## Code references/g)?.length, 1);
+  assert.deepEqual(acceptanceCriteria(withSelection), ["The CSV includes exactly the visible rows and columns."]);
+  const laterSection = appendCodeReference(`${withFile}\n## Notes\n\nKeep this section.\n`, "owner/repo", sha, "src/b.ts");
+  assert.match(laterSection, /src\/b\.ts[^]*\n## Notes\n\nKeep this section\./);
+  assert.throws(() => appendCodeReference("x".repeat(39_990), "owner/repo", sha, "src/a.ts"), /spec is full/);
 });
 
 test("agent traces show completed Codex commands and Claude tools without inventing test results", () => {

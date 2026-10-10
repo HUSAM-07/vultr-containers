@@ -8,6 +8,25 @@ export function draftKey(repo: string): string {
   return `fava:draft:${encodeURIComponent(repo)}`;
 }
 
+export function appendCodeReference(content: string, repo: string, sha: string, path: string,
+  selection?: { startLine: number; endLine: number; text: string }): string {
+  const encodedPath = path.split("/").map(segment => encodeURIComponent(segment).replace(/[()]/g, character =>
+    character === "(" ? "%28" : "%29")).join("/");
+  const lines = selection ? `#L${selection.startLine}-L${selection.endLine}` : "";
+  const url = `https://github.com/${repo}/blob/${sha}/${encodedPath}${lines}`;
+  const label = path.replace(/[\\[\]]/g, "\\$&");
+  const excerpt = selection?.text.trim().slice(0, 2000);
+  const entry = `- [${label}](<${url}>)${excerpt ? `\n\n${excerpt.split("\n").map(line => `> ${line}`).join("\n")}` : ""}`;
+  const heading = "## Code references";
+  const section = content.search(/^## Code references$/m);
+  const nextHeading = section < 0 ? -1 : content.slice(section + heading.length).search(/^## /m);
+  const insertAt = nextHeading < 0 ? content.length : section + heading.length + nextHeading;
+  const updated = section < 0 ? `${content.trimEnd()}\n\n${heading}\n\n${entry}\n`
+    : `${content.slice(0, insertAt).trimEnd()}\n\n${entry}\n\n${content.slice(insertAt).trimStart()}`;
+  if (updated.length > 40_000) throw Error("The spec is full. Remove text before adding a code reference.");
+  return updated;
+}
+
 export function readDraft(getItem: (key: string) => string | null, repo: string): SpecDraft {
   let draft: Record<string, unknown> | null = null;
   try { draft = JSON.parse(getItem(draftKey(repo)) || "null"); } catch { /* Use the legacy draft if available. */ }

@@ -16,7 +16,7 @@ import { LocalDevicesPanel } from "@/components/application/local-devices-panel"
 import { ProjectMembersPanel } from "@/components/application/project-members-panel";
 import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
-import { draftKey, initialSpec, readDraft } from "@/lib/fava-drafts";
+import { appendCodeReference, draftKey, initialSpec, readDraft } from "@/lib/fava-drafts";
 import { importContext, parseRepo, readContextFile } from "@/lib/fava-github";
 import { agentModels } from "@/lib/fava-models";
 import { cx } from "@/utils/cx";
@@ -300,6 +300,10 @@ export default function WorkspacePage() {
       </section>
 
       <aside className="min-w-0 rounded-3xl border border-border-button-default bg-background-secondary-default p-5"><div className="flex items-center gap-2"><RiFileTextLine className="size-5 text-accent-600" aria-hidden /><h2 className="text-title-3-semibold">Imported context</h2></div>{context ? <><p className="mt-3 text-body-regular text-text-secondary">{context.repository} · {context.defaultBranch} · <a className="font-mono text-accent-600 hover:underline" href={`https://github.com/${context.repository}/commit/${context.commitSha}`} target="_blank" rel="noreferrer">{context.commitSha.slice(0, 7)}</a></p><ContextFileBrowser key={context.repository + "@" + context.commitSha} paths={context.paths} files={context.files}
+          onAttach={(file, selection) => {
+            try { setContent(appendCodeReference(content, context.repository, context.commitSha, file.path, selection)); setError(""); }
+            catch (cause) { setError((cause as Error).message); }
+          }}
           loadFile={path => session?.connected && selectedProject
             ? json<{ path: string; text: string }>(`/api/github?action=file&repo=${encodeURIComponent(context.repository)}&path=${encodeURIComponent(path)}&ref=${context.commitSha}`)
             : readContextFile("", context.repository, path, context.commitSha, true)} />
