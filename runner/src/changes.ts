@@ -12,8 +12,10 @@ export function parseChanges(raw: string): Change[] {
     ) || [];
     const path = fields[index + 1];
     if (!status || !path || path.includes("\ufffd") || path.startsWith("/") || path.split("/").some(part => !part || part === "." || part === "..") ||
-      ["AGENTS.md", "CLAUDE.md"].includes(path.split("/").at(-1) || "") || path.startsWith("specs/") ||
-      path.startsWith(".fava/skills/") || path.startsWith(".git/"))
+      ["AGENTS.md", "CLAUDE.md", "GEMINI.md"].includes(path.split("/").at(-1) || "") ||
+      path.startsWith("specs/") || path.startsWith(".fava/skills/") || path.startsWith(".git/") ||
+      path === ".github/copilot-instructions.md" || path.startsWith(".github/instructions/") ||
+      /(^|\/)\.env($|\.)|\.(pem|key)$/i.test(path))
       throw Error(`Agent changed a protected or invalid path: ${path}`);
     if (status === "D" && (oldMode === "100644" || oldMode === "100755"))
       changes.push({ path, mode: oldMode, sha: null });

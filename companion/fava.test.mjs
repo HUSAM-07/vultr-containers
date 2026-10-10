@@ -124,6 +124,15 @@ test("Codex and Claude runs use the pinned commit and submit only staged changes
     assert.deepEqual(actions.map(action => action.action), ["submit"]);
     assert.match(actions[0].patch, /\+\+\+ b\/outcome\.txt/);
     assert.equal(actions[0].summary, "Added the outcome file with Claude.");
+
+    for (const path of ["GEMINI.md", ".env.production", ".github/copilot-instructions.md",
+      ".github/instructions/security.instructions.md"]) {
+      await writeFile(fakeClaude, `#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.mkdirSync(require("node:path").dirname(${JSON.stringify(path)}), { recursive: true });\nfs.writeFileSync(${JSON.stringify(path)}, "changed\\n");\n`);
+      actions.length = 0;
+      await assert.rejects(runClaim({ ...job, sha, provider: "anthropic", model: "claude-sonnet-5" }, client),
+        /protected file/);
+      assert.deepEqual(actions.map(action => action.action), ["fail"], path);
+    }
   } finally {
     for (const [name, value] of Object.entries(previous))
       if (value === undefined) delete process.env[name]; else process.env[name] = value;

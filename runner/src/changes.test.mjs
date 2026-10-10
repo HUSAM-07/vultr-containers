@@ -19,7 +19,9 @@ test("Git change manifest accepts regular edits and deletes without renames", ()
 });
 
 test("Git change manifest rejects protected and unsupported files", () => {
-  for (const path of ["specs/goal.md", ".fava/skills/trust.md", "AGENTS.md", "src/CLAUDE.md", "../escape", "a/../b"])
+  for (const path of ["specs/goal.md", ".fava/skills/trust.md", "AGENTS.md", "src/CLAUDE.md",
+    "src/GEMINI.md", ".github/copilot-instructions.md", ".github/instructions/security.instructions.md",
+    ".env", "src/.env.production", "certs/client.pem", "config/private.key", "../escape", "a/../b"])
     assert.throws(() => parseChanges(raw("000000", "100644", "A", path)), /protected or invalid/);
   assert.throws(() => parseChanges(raw("100644", "120000", "M", "link")), /Unsupported Git file mode/);
   assert.throws(() => parseChanges(""), /between 1 and 25/);

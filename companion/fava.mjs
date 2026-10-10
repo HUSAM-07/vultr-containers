@@ -207,7 +207,8 @@ export async function runClaim(rawJob, client, externalSignal) {
     await git("add", "-A");
     const names = (await git("diff", "--cached", "--name-only", "-z", "HEAD")).split("\0").filter(Boolean);
     if (!names.length || names.length > 25 || names.some(path => path.startsWith("specs/") ||
-      path.startsWith(".fava/skills/") || ["AGENTS.md", "CLAUDE.md"].includes(path.split("/").at(-1)) ||
+      path.startsWith(".fava/skills/") || ["AGENTS.md", "CLAUDE.md", "GEMINI.md"].includes(path.split("/").at(-1)) ||
+      path === ".github/copilot-instructions.md" || path.startsWith(".github/instructions/") ||
       /(^|\/)\.env($|\.)|\.(pem|key)$/i.test(path)))
       throw Error("Agent changed no files, too many files, or a protected file");
     const diff = await runProcess("git", ["diff", "--cached", "--binary", "HEAD"],
