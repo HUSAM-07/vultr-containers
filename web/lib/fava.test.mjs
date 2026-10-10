@@ -9,7 +9,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice } from "./fava-devices.ts";
-import { authenticateDevice, claimLocalRun, renewLocalRun } from "./fava-local-runs.ts";
+import { authenticateDevice, claimLocalRun, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -68,6 +68,7 @@ function testDb() {
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0012_cloudflare_oauth.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0013_local_devices.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0014_local_run_leases.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../infra/cloudflare/0015_local_submissions.sql", import.meta.url), "utf8"));
   const db = {
     prepare(sql) {
       let values = [];
@@ -170,6 +171,43 @@ test("local runs require a merged spec, fence competing devices, and stop after 
     await assert.rejects(renewLocalRun(db, b, recovered.id, recovered.leaseId), /no longer active/);
     sqlite.exec("UPDATE runs SET status = 'cancelled'");
     await assert.rejects(renewLocalRun(db, b, recovered.id, recovered.leaseId), /no longer active/);
+  } finally { sqlite.close(); }
+});
+
+test("local submission is bounded, lease-fenced, private, and retryable", async () => {
+  const { sqlite, db } = testDb();
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model, execution_mode) VALUES ('s', 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol', 'local')")
+      .run("a".repeat(40));
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1, 'local')")
+      .run("11111111-1111-4111-8111-111111111111", "a".repeat(40));
+    const paired = await pairDevice(db, "p", 1, "Laptop one");
+    const device = await authenticateDevice(db, `Bearer ${paired.token}`);
+    const claimed = await claimLocalRun(db, device);
+    const writes = new Map();
+    const artifacts = { async put(key, body) { writes.set(key, body); } };
+    const submission = { runId: claimed.id, leaseId: claimed.leaseId,
+      patch: "diff --git a/a b/a\n+new code\n", summary: "Added requested behavior", stdout: "agent log", stderr: "" };
+    await assert.rejects(submitLocalRun(db, artifacts, device,
+      { ...submission, patch: "not a diff" }), /nonempty staged diff/);
+    await assert.rejects(submitLocalRun(db, artifacts, device,
+      { ...submission, stdout: "x".repeat(100_001) }), /too large/);
+    assert.deepEqual(await submitLocalRun(db, artifacts, device, submission), { submitted: true });
+    assert.deepEqual(await submitLocalRun(db, artifacts, device, submission), { submitted: true });
+    assert.equal(writes.size, 1);
+    const stored = sqlite.prepare("SELECT local_submission_key AS key, local_submission_sha256 AS hash, local_submitted_at AS submittedAt FROM runs WHERE id = ?")
+      .get(claimed.id);
+    assert.equal(stored.key.startsWith(`runs/${claimed.id}/local-${claimed.leaseId}-`), true);
+    assert.equal(stored.hash.length, 64);
+    assert.equal(stored.submittedAt > 0, true);
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(writes.get(stored.key))),
+      { patch: submission.patch, summary: submission.summary, stdout: submission.stdout, stderr: submission.stderr });
+    await assert.rejects(renewLocalRun(db, device, claimed.id, claimed.leaseId), /no longer active/);
+    sqlite.exec("UPDATE runs SET lease_expires_at = 1");
+    assert.equal(await claimLocalRun(db, device), null);
+    await assert.rejects(submitLocalRun(db, artifacts, device,
+      { ...submission, summary: "changed" }), /no longer active/);
   } finally { sqlite.close(); }
 });
 

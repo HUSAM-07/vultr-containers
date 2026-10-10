@@ -10,7 +10,7 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function fixture() {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql", "0010_run_publication_fence.sql", "0011_server_sessions.sql", "0013_local_devices.sql", "0014_local_run_leases.sql"])
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql", "0010_run_publication_fence.sql", "0011_server_sessions.sql", "0013_local_devices.sql", "0014_local_run_leases.sql", "0015_local_submissions.sql"])
     sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
   sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
   sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")

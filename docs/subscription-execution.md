@@ -22,7 +22,7 @@ This is a separate execution mode; the current Cloudflare Sandbox and AI Gateway
 
 - The project-scoped device API now pairs a device, returns its credential once, and supports listing, rotation, revocation, and an audit trail. Only its SHA-256 hash is stored. The local companion and run authorization are still needed before this is a usable connection.
 - The server now pins cloud or local execution mode when the spec merges, fences competing local claims with a 90-second lease, and refuses claims after device revocation or loss of Fava admin membership. The local companion must still renew its lease and stop its process on cancellation or lease loss.
-- A bounded artifact upload protocol that verifies the pinned commit and reviewed diff before publication.
+- A device can now submit a bounded staged diff, summary, and logs to private R2 under an active lease. Server-side checkout, patch verification against the pinned commit, conformance review, and implementation PR publication are still required before a submission can complete a run.
 - End-to-end tests for two competing companions, revoked devices, expired leases, and a spec that has not merged.
 
 Until those paths are implemented and tested, the workspace should continue to label model runs as Fava-billed AI Gateway runs.

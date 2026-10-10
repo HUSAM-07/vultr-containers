@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
-import { authenticateDevice, claimLocalRun, renewLocalRun } from "@/lib/fava-local-runs";
+import { authenticateDevice, claimLocalRun, renewLocalRun, submitLocalRun } from "@/lib/fava-local-runs";
 
 export async function POST(request: NextRequest) {
   try {
     const device = await authenticateDevice(env.DB, request.headers.get("authorization"));
-    const body = await readJson(request, 300);
+    const body = await readJson(request, 1_300_000);
     if (!body || typeof body !== "object" || !("action" in body) || typeof body.action !== "string")
       throw new GitHubError(400, "Invalid device run request");
     let result;
@@ -15,6 +15,9 @@ export async function POST(request: NextRequest) {
     else if (body.action === "heartbeat" && "runId" in body && typeof body.runId === "string" &&
       "leaseId" in body && typeof body.leaseId === "string")
       result = await renewLocalRun(env.DB, device, body.runId, body.leaseId);
+    else if (body.action === "submit" && "runId" in body && "leaseId" in body &&
+      "patch" in body && "summary" in body && "stdout" in body && "stderr" in body)
+      result = await submitLocalRun(env.DB, env.ARTIFACTS, device, body as Parameters<typeof submitLocalRun>[3]);
     else throw new GitHubError(400, "Invalid device run action");
     return NextResponse.json(result || { pending: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

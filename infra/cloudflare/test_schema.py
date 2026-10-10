@@ -20,6 +20,7 @@ class SchemaTest(unittest.TestCase):
         db.executescript(Path(__file__).with_name("0012_cloudflare_oauth.sql").read_text())
         db.executescript(Path(__file__).with_name("0013_local_devices.sql").read_text())
         db.executescript(Path(__file__).with_name("0014_local_run_leases.sql").read_text())
+        db.executescript(Path(__file__).with_name("0015_local_submissions.sql").read_text())
         self.assertIn("payload_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(sessions)")])
         self.assertIn("refresh_ciphertext", [row[1] for row in db.execute("PRAGMA table_info(cloudflare_connections)")])
         db.execute("INSERT INTO users VALUES (1, 'owner', '', 1)")

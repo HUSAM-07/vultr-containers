@@ -182,3 +182,16 @@ if (localLeaseColumns.every(name => leaseColumns.includes(name)) && specMode && 
   if (!localLeaseColumns.every(name => installed.includes(name)) || !view) throw Error("Local run-lease migration verification failed");
   console.log("Local run-lease migration applied");
 }
+
+const submissionColumns = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+const localSubmissionColumns = ["local_submission_key", "local_submission_sha256", "local_submitted_at"];
+if (localSubmissionColumns.every(name => submissionColumns.includes(name))) {
+  console.log("Local submission migration is already applied");
+} else if (localSubmissionColumns.some(name => submissionColumns.includes(name))) {
+  throw Error("Local D1 has a partial submission migration; inspect it before applying migrations");
+} else {
+  await query(await readFile(new URL("./0015_local_submissions.sql", import.meta.url), "utf8"));
+  const installed = (await query("PRAGMA table_info(runs)")).rows.map(row => row[1]);
+  if (!localSubmissionColumns.every(name => installed.includes(name))) throw Error("Local submission migration verification failed");
+  console.log("Local submission migration applied");
+}
