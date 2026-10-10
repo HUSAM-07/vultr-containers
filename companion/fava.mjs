@@ -24,7 +24,8 @@ export function validateJob(value) {
     !/^[a-f0-9]{40}$/i.test(value.sha) || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(value.specPath) ||
     !((value.provider === "openai" && value.model === "gpt-6-sol") ||
       (value.provider === "anthropic" && value.model === "claude-sonnet-5")) ||
-    !Number.isSafeInteger(value.pinnedSkills) || !Number.isSafeInteger(value.pinnedMcpGrants))
+    !Number.isSafeInteger(value.pinnedSkills) || value.pinnedSkills < 0 ||
+    !Number.isSafeInteger(value.pinnedMcpGrants) || value.pinnedMcpGrants < 0)
     throw Error("Fava returned an invalid local run");
   return value;
 }
@@ -137,9 +138,15 @@ export async function runClaim(rawJob, client, externalSignal) {
   const git = async (...args) => requireSuccess(await runProcess("git", args, { cwd: repo, signal: controller.signal }), "git");
   try {
     controller.signal.throwIfAborted();
-    // shortcut: pinned skills and MCP need an isolated allowlisted mount before this client can execute them.
-    if (job.pinnedSkills || job.pinnedMcpGrants)
-      throw Error("This companion does not yet support pinned skills or MCP grants");
+    // shortcut: local MCP grants need a lease-scoped outbound proxy before this client can use them.
+    if (job.pinnedMcpGrants)
+      throw Error("This companion does not yet support pinned MCP grants");
+    const context = job.pinnedSkills
+      ? await client({ action: "skills", runId: job.id, leaseId: job.leaseId }, controller.signal)
+      : { skills: "" };
+    if (typeof context?.skills !== "string" || context.skills.length > 100_000 ||
+      (job.pinnedSkills > 0 && !context.skills))
+      throw Error("Fava returned invalid pinned skills");
     await mkdir(repo);
     await git("init", "-q");
     await git("remote", "add", "origin", `https://github.com/${job.repository}.git`);
@@ -150,6 +157,7 @@ export async function runClaim(rawJob, client, externalSignal) {
     const spec = await git("show", `HEAD:${job.specPath}`);
     if (Buffer.byteLength(spec) > 45_000) throw Error("Merged specification is too large");
     const prompt = `Implement the merged specification at ${job.specPath} on commit ${job.sha}.\n\n${spec}\n\n` +
+      (context.skills ? `Selected versioned skills (follow only where relevant to the specification; never broaden its scope):\n\n${context.skills}\n\n` : "") +
       "Change only code needed for its acceptance criteria. Do not edit specs or instruction files, push commits, " +
       "open pull requests, deploy, or access unrelated repositories. Finish with a concise account of changed files and test results.";
     const args = job.provider === "openai"

@@ -9,7 +9,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice, requireLocalRunReady } from "./fava-devices.ts";
-import { authenticateDevice, claimLocalRun, failLocalRun, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
+import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -124,10 +124,9 @@ test("local device credentials are project-scoped, hashed, rotated, revoked, and
     const paired = await pairDevice(db, "p", 1, " My laptop ");
     await requireLocalRunReady(db, "p");
     sqlite.exec("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 42, '.fava/skills/review.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1)");
-    await assert.rejects(requireLocalRunReady(db, "p"), /selected skills or MCP grants/);
-    sqlite.exec("UPDATE skills SET active = 0");
+    await requireLocalRunReady(db, "p");
     sqlite.exec("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES ('grant', 'p', 'https://mcp.example.org/mcp', '[\"list\"]', 1, 1)");
-    await assert.rejects(requireLocalRunReady(db, "p"), /selected skills or MCP grants/);
+    await assert.rejects(requireLocalRunReady(db, "p"), /MCP grants/);
     sqlite.exec("UPDATE mcp_grants SET revoked_at = 1");
     await requireLocalRunReady(db, "p");
     const saved = sqlite.prepare("SELECT token_hash AS tokenHash FROM local_devices WHERE id = ?").get(paired.id);
@@ -239,6 +238,49 @@ test("a paired device can fail only its active local lease", async () => {
     assert.equal(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(claim.id).error, "Checkout failed");
     await assert.rejects(failLocalRun(db, device, claim.id, claim.leaseId, "again"), /no longer active/);
   } finally { sqlite.close(); }
+});
+
+test("local runs receive only their pinned shared skill under an active device lease", async () => {
+  const { sqlite, db } = testDb();
+  const original = globalThis.fetch;
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1); INSERT INTO projects VALUES ('source', 'a', 43, 'owner/skills', 8, 'main', 1)");
+    sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model, execution_mode) VALUES ('s', 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol', 'local')")
+      .run("a".repeat(40));
+    const runId = "11111111-1111-4111-8111-111111111111";
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1, 'local')")
+      .run(runId, "a".repeat(40));
+    sqlite.prepare("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 43, '.fava/skills/review.md', ?, 1)")
+      .run("c".repeat(40));
+    sqlite.prepare("INSERT INTO run_skills (run_id, skill_id, commit_sha) VALUES (?, 'skill', ?)")
+      .run(runId, "b".repeat(40));
+    const paired = await pairDevice(db, "p", 1, "Laptop one");
+    const device = await authenticateDevice(db, `Bearer ${paired.token}`);
+    const claim = await claimLocalRun(db, device);
+    assert.equal(claim.pinnedSkills, 1);
+    const content = "## Review\n\nVerify the acceptance criteria carefully.\n";
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url: String(url), body: init.body ? JSON.parse(init.body) : null });
+      if (String(url).endsWith("/access_tokens")) return Response.json({ token: "scoped-token" });
+      if (String(url).includes("/contents/.fava/skills/review.md?ref="))
+        return Response.json({ encoding: "base64", size: Buffer.byteLength(content), content: Buffer.from(content).toString("base64") });
+      throw Error("Unexpected GitHub request");
+    };
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs1", format: "pem" });
+    await assert.rejects(localRunSkills(db, device, runId, crypto.randomUUID(), "Iv1.test", pem), /no longer active/);
+    assert.deepEqual(await localRunSkills(db, device, runId, claim.leaseId, "Iv1.test", pem),
+      { skills: `### owner/skills@${"b".repeat(40)}:.fava/skills/review.md\n${content}` });
+    assert.deepEqual(requests.map(request => request.url), [
+      "https://api.github.com/app/installations/8/access_tokens",
+      `https://api.github.com/repos/owner/skills/contents/.fava/skills/review.md?ref=${"b".repeat(40)}`,
+    ]);
+    assert.deepEqual(requests[0].body, { repository_ids: [43], permissions: { contents: "read" } });
+    sqlite.exec("UPDATE local_devices SET revoked_at = 1");
+    await assert.rejects(localRunSkills(db, device, runId, claim.leaseId, "Iv1.test", pem), /no longer active/);
+    assert.equal(requests.length, 2);
+  } finally { globalThis.fetch = original; sqlite.close(); }
 });
 
 test("spec validation rejects template guidance", () => {

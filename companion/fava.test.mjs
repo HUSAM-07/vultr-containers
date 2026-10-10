@@ -37,12 +37,21 @@ test("an expired lease signal stops the local child process", async () => {
   assert.ok(Date.now() - started < 2_000);
 });
 
-test("unsupported pinned grants fail the claimed run before checkout", async () => {
+test("unsupported pinned MCP grants fail the claimed run before checkout", async () => {
   const actions = [];
-  await assert.rejects(runClaim({ ...job, pinnedSkills: 1 }, async body => {
+  await assert.rejects(runClaim({ ...job, pinnedMcpGrants: 1 }, async body => {
     actions.push(body);
     return { status: "failed" };
-  }), /does not yet support pinned skills/);
+  }), /does not yet support pinned MCP grants/);
   assert.deepEqual(actions.map(action => action.action), ["fail"]);
   assert.equal(actions[0].runId, job.id);
+});
+
+test("a local run requests its pinned skills before cloning", async () => {
+  const actions = [];
+  await assert.rejects(runClaim({ ...job, pinnedSkills: 1 }, async body => {
+    actions.push(body.action);
+    return body.action === "skills" ? { skills: "" } : { status: "failed" };
+  }), /invalid pinned skills/);
+  assert.deepEqual(actions, ["skills", "fail"]);
 });

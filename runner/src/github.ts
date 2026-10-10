@@ -1,4 +1,4 @@
-import { sign } from "node:crypto";
+export { appJwt } from "../../web/lib/fava-app-jwt.ts";
 
 export function isGitReadRequest(url: URL, method: string, repository: string) {
   const path = `/${repository}.git`;
@@ -6,13 +6,6 @@ export function isGitReadRequest(url: URL, method: string, repository: string) {
     method === "GET" && url.pathname === `${path}/info/refs` && url.search === "?service=git-upload-pack" ||
     method === "POST" && url.pathname === `${path}/git-upload-pack` && !url.search
   );
-}
-
-export function appJwt(clientId: string, privateKey: string) {
-  const now = Math.floor(Date.now() / 1000);
-  const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const unsigned = `${part({ alg: "RS256", typ: "JWT" })}.${part({ iat: now - 60, exp: now + 540, iss: clientId })}`;
-  return `${unsigned}.${sign("RSA-SHA256", Buffer.from(unsigned), privateKey).toString("base64url")}`;
 }
 
 export async function installationToken(jwt: string, installationId: number, repositoryId: number,

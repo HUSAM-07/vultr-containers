@@ -26,10 +26,10 @@ export async function requireLocalRunReady(db: Db, projectId: string) {
   const active = await db.prepare("SELECT 1 FROM eligible_local_devices WHERE project_id = ? AND revoked_at IS NULL AND expires_at > ? LIMIT 1")
     .bind(projectId, Date.now()).first();
   if (!active) throw new GitHubError(409, "Pair a local device for this project before publishing a local run spec");
-  const unsupported = await db.prepare("SELECT EXISTS(SELECT 1 FROM skills JOIN projects ON projects.account_id = skills.account_id WHERE projects.id = ? AND skills.active = 1 AND (skills.project_id IS NULL OR skills.project_id = ?)) AS skills, EXISTS(SELECT 1 FROM mcp_grants WHERE project_id = ? AND revoked_at IS NULL) AS mcp")
-    .bind(projectId, projectId, projectId).first<{ skills: number; mcp: number }>();
-  if (unsupported?.skills || unsupported?.mcp)
-    throw new GitHubError(409, "Local runs cannot use selected skills or MCP grants yet; remove them or choose Fava cloud");
+  const unsupported = await db.prepare("SELECT 1 FROM mcp_grants WHERE project_id = ? AND revoked_at IS NULL LIMIT 1")
+    .bind(projectId).first();
+  if (unsupported)
+    throw new GitHubError(409, "Local runs cannot use MCP grants yet; remove them or choose Fava cloud");
 }
 
 export async function pairDevice(db: Db, projectId: string, actorId: number, label: string) {

@@ -1,5 +1,6 @@
 import { GitHubError } from "./fava-github.ts";
 import { deviceTokenHash } from "./fava-devices.ts";
+import { pinnedRunSkills } from "./fava-run-skills.ts";
 import type { env } from "./runtime-env.ts";
 
 type Db = typeof env.DB;
@@ -46,6 +47,14 @@ export async function renewLocalRun(db: Db, device: Device, runId: string, lease
     .bind(expiresAt, runId, leaseId, device.id, now, device.projectId, device.id, device.projectId, now).run();
   if (result.meta.changes !== 1) throw new GitHubError(409, "Run lease is no longer active");
   return { runId, leaseId, expiresAt };
+}
+
+export async function localRunSkills(db: Db, device: Device, runId: string, leaseId: string,
+  clientId: string, privateKey: string) {
+  await renewLocalRun(db, device, runId, leaseId);
+  const skills = await pinnedRunSkills(db, runId, clientId, privateKey);
+  await renewLocalRun(db, device, runId, leaseId);
+  return { skills };
 }
 
 export async function failLocalRun(db: Db, device: Device, runId: string, leaseId: string, message: string) {
