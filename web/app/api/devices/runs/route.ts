@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { env } from "@/lib/runtime-env";
 import { GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
-import { authenticateDevice, claimLocalRun, renewLocalRun, submitLocalRun } from "@/lib/fava-local-runs";
+import { authenticateDevice, claimLocalRun, failLocalRun, renewLocalRun, submitLocalRun } from "@/lib/fava-local-runs";
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,6 +18,10 @@ export async function POST(request: NextRequest) {
     else if (body.action === "submit" && "runId" in body && "leaseId" in body &&
       "patch" in body && "summary" in body && "stdout" in body && "stderr" in body)
       result = await submitLocalRun(env.DB, env.ARTIFACTS, device, body as Parameters<typeof submitLocalRun>[3]);
+    else if (body.action === "fail" && "runId" in body && typeof body.runId === "string" &&
+      "leaseId" in body && typeof body.leaseId === "string" &&
+      "message" in body && typeof body.message === "string")
+      result = await failLocalRun(env.DB, device, body.runId, body.leaseId, body.message);
     else throw new GitHubError(400, "Invalid device run action");
     return NextResponse.json(result || { pending: true }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

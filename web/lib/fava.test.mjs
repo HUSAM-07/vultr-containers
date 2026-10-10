@@ -9,7 +9,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice } from "./fava-devices.ts";
-import { authenticateDevice, claimLocalRun, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
+import { authenticateDevice, claimLocalRun, failLocalRun, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -208,6 +208,24 @@ test("local submission is bounded, lease-fenced, private, and retryable", async 
     assert.equal(await claimLocalRun(db, device), null);
     await assert.rejects(submitLocalRun(db, artifacts, device,
       { ...submission, summary: "changed" }), /no longer active/);
+  } finally { sqlite.close(); }
+});
+
+test("a paired device can fail only its active local lease", async () => {
+  const { sqlite, db } = testDb();
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model, execution_mode) VALUES ('s', 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol', 'local')")
+      .run("a".repeat(40));
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1, 'local')")
+      .run("11111111-1111-4111-8111-111111111111", "a".repeat(40));
+    const paired = await pairDevice(db, "p", 1, "Laptop one");
+    const device = await authenticateDevice(db, `Bearer ${paired.token}`);
+    const claim = await claimLocalRun(db, device);
+    await assert.rejects(failLocalRun(db, device, claim.id, crypto.randomUUID(), "Checkout failed"), /no longer active/);
+    assert.deepEqual(await failLocalRun(db, device, claim.id, claim.leaseId, "Checkout failed"), { status: "failed" });
+    assert.equal(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(claim.id).error, "Checkout failed");
+    await assert.rejects(failLocalRun(db, device, claim.id, claim.leaseId, "again"), /no longer active/);
   } finally { sqlite.close(); }
 });
 

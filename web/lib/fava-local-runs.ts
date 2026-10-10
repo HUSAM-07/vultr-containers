@@ -7,7 +7,7 @@ type Artifacts = typeof env.ARTIFACTS;
 const leaseMs = 90_000;
 type Device = { id: string; projectId: string };
 type Candidate = { id: string; repository: string; sha: string; specPath: string;
-  provider: string; model: string };
+  provider: string; model: string; pinnedSkills: number; pinnedMcpGrants: number };
 export type LocalSubmission = { runId: string; leaseId: string; patch: string;
   summary: string; stdout: string; stderr: string };
 
@@ -25,7 +25,7 @@ export async function claimLocalRun(db: Db, device: Device) {
   const busy = await db.prepare("SELECT 1 FROM runs WHERE lease_device_id = ? AND execution_mode = 'local' AND status = 'running' AND lease_expires_at > ? LIMIT 1")
     .bind(device.id, now).first();
   if (busy) return null;
-  const candidates = await db.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE specs.project_id = ? AND runs.execution_mode = 'local' AND runs.local_submitted_at IS NULL AND ((runs.status = 'queued') OR (runs.status = 'running' AND runs.lease_expires_at < ?)) AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha AND specs.execution_mode = runs.execution_mode AND specs.provider = runs.provider AND specs.model = runs.model AND projects.installation_id > 0 ORDER BY runs.created_at LIMIT 5")
+  const candidates = await db.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, (SELECT COUNT(*) FROM run_skills WHERE run_id = runs.id) AS pinnedSkills, (SELECT COUNT(*) FROM run_mcp_grants WHERE run_id = runs.id) AS pinnedMcpGrants FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE specs.project_id = ? AND runs.execution_mode = 'local' AND runs.local_submitted_at IS NULL AND ((runs.status = 'queued') OR (runs.status = 'running' AND runs.lease_expires_at < ?)) AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha AND specs.execution_mode = runs.execution_mode AND specs.provider = runs.provider AND specs.model = runs.model AND projects.installation_id > 0 ORDER BY runs.created_at LIMIT 5")
     .bind(device.projectId, now).all<Candidate>();
   for (const run of candidates.results) {
     const leaseId = crypto.randomUUID();
@@ -46,6 +46,17 @@ export async function renewLocalRun(db: Db, device: Device, runId: string, lease
     .bind(expiresAt, runId, leaseId, device.id, now, device.projectId, device.id, device.projectId, now).run();
   if (result.meta.changes !== 1) throw new GitHubError(409, "Run lease is no longer active");
   return { runId, leaseId, expiresAt };
+}
+
+export async function failLocalRun(db: Db, device: Device, runId: string, leaseId: string, message: string) {
+  if (!/^[a-f0-9-]{36}$/i.test(runId) || !/^[a-f0-9-]{36}$/i.test(leaseId) ||
+    typeof message !== "string" || !message.trim() || message.length > 1_000)
+    throw new GitHubError(400, "Invalid local run failure");
+  const now = Date.now();
+  const result = await db.prepare("UPDATE runs SET status = 'failed', error = ?, completed_at = ? WHERE id = ? AND lease_id = ? AND lease_device_id = ? AND execution_mode = 'local' AND status = 'running' AND lease_expires_at > ? AND local_submitted_at IS NULL AND publishing_at IS NULL AND spec_id IN (SELECT id FROM specs WHERE project_id = ?) AND EXISTS (SELECT 1 FROM eligible_local_devices WHERE id = ? AND project_id = ? AND revoked_at IS NULL AND expires_at > ?)")
+    .bind(message.trim(), now, runId, leaseId, device.id, now, device.projectId, device.id, device.projectId, now).run();
+  if (result.meta.changes !== 1) throw new GitHubError(409, "Run lease is no longer active");
+  return { status: "failed" };
 }
 
 export async function submitLocalRun(db: Db, artifacts: Artifacts, device: Device, submission: LocalSubmission) {
