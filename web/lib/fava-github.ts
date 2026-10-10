@@ -209,8 +209,9 @@ export async function importContext(token: string, name: string, publicOnly = fa
     const text = decodeTextFile(file);
     return text === null ? null : { path, text };
   }));
-  return { repository: repo, defaultBranch: metadata.default_branch, commitSha, paths: paths.slice(0, 400),
-    truncated: tree.truncated || paths.length > 400, files: files.filter(file => file !== null) };
+  // shortcut: GitHub truncates recursive trees above 100,000 entries or 7 MB; walk subtrees when that affects users.
+  return { repository: repo, defaultBranch: metadata.default_branch, commitSha, paths,
+    truncated: tree.truncated, files: files.filter(file => file !== null) };
 }
 
 export async function listSpecPullRequests(token: string, name: string) {

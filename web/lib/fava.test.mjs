@@ -427,7 +427,7 @@ test("publishing a spec creates a branch, file, and PR in that order", async () 
   } finally { globalThis.fetch = original; }
 });
 
-test("context import reads repository instructions and a bounded file map", async () => {
+test("context import reads repository instructions and all paths in GitHub's tree", async () => {
   const original = globalThis.fetch;
   const requests = [];
   const commitSha = "a".repeat(40);
@@ -435,7 +435,8 @@ test("context import reads repository instructions and a bounded file map", asyn
     { default_branch: "main" },
     { commit: { sha: commitSha } },
     { tree: [{ path: "README.md", type: "blob" }, { path: "AGENTS.md", type: "blob" },
-      { path: ".fava/skills/review.md", type: "blob" }], truncated: false },
+      { path: ".fava/skills/review.md", type: "blob" },
+      ...Array.from({ length: 450 }, (_, index) => ({ path: `src/file-${index}.ts`, type: "blob" }))], truncated: false },
     { content: Buffer.from("Project overview").toString("base64"), encoding: "base64", size: 16 },
     { content: Buffer.from("Project rules").toString("base64"), encoding: "base64", size: 13 },
   ];
@@ -445,7 +446,10 @@ test("context import reads repository instructions and a bounded file map", asyn
   };
   try {
     const context = await importContext("test-token", "owner/repo");
-    assert.deepEqual(context.paths, ["README.md", "AGENTS.md", ".fava/skills/review.md"]);
+    assert.equal(context.paths.length, 453);
+    assert.deepEqual(context.paths.slice(0, 3), ["README.md", "AGENTS.md", ".fava/skills/review.md"]);
+    assert.equal(context.paths.at(-1), "src/file-449.ts");
+    assert.equal(context.truncated, false);
     assert.deepEqual(context.files.map(file => file.path), ["README.md", "AGENTS.md"]);
     assert.equal(context.commitSha, commitSha);
     assert.equal(requests[1], "https://api.github.com/repos/owner/repo/branches/main");
