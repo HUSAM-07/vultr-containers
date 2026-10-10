@@ -78,7 +78,7 @@ test("a local run requests its pinned skills before cloning", async () => {
   assert.deepEqual(actions, ["skills", "fail"]);
 });
 
-test("a claimed run checks out its pinned commit and submits only its staged change", async () => {
+test("Codex and Claude runs use the pinned commit and submit only staged changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "fava-companion-test-"));
   const source = join(root, "source");
   const bin = join(root, "bin");
@@ -114,6 +114,16 @@ test("a claimed run checks out its pinned commit and submits only its staged cha
     assert.match(actions[0].patch, /\+\+\+ b\/outcome\.txt/);
     assert.doesNotMatch(actions[0].patch, /newer\.txt|specs\/change\.md/);
     assert.equal(actions[0].summary, "Added the outcome file.");
+
+    const fakeClaude = join(bin, "claude");
+    await writeFile(fakeClaude, `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.env.FAVA_DEVICE_TOKEN || fs.existsSync("newer.txt")) process.exit(8);\nfs.writeFileSync("outcome.txt", "implemented\\n");\nconsole.log(JSON.stringify({ type: "result", result: "Added the outcome file with Claude." }));\n`);
+    await chmod(fakeClaude, 0o755);
+    actions.length = 0;
+    assert.deepEqual(await runClaim({ ...job, sha, provider: "anthropic", model: "claude-sonnet-5" }, client),
+      { submitted: true, runId: job.id });
+    assert.deepEqual(actions.map(action => action.action), ["submit"]);
+    assert.match(actions[0].patch, /\+\+\+ b\/outcome\.txt/);
+    assert.equal(actions[0].summary, "Added the outcome file with Claude.");
   } finally {
     for (const [name, value] of Object.entries(previous))
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
