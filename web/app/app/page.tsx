@@ -18,7 +18,7 @@ import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
 import { appendCodeReference, draftKey, initialSpec, readDraft } from "@/lib/fava-drafts";
 import { specValidationError } from "@/lib/fava-criteria";
-import { importContext, parseRepo, readContextFile } from "@/lib/fava-github";
+import { parseRepo } from "@/lib/fava-github";
 import { agentModels } from "@/lib/fava-models";
 import { cx } from "@/utils/cx";
 
@@ -112,6 +112,15 @@ export default function WorkspacePage() {
         setRestored(true);
       });
     } catch { queueMicrotask(() => setRestored(true)); }
+    const restorePublic = async () => {
+      // shortcut: re-fetch public context on reload; cache by commit when shared egress hits GitHub's limit.
+      try {
+        const imported = await json<Context>(`/api/github/public?repo=${encodeURIComponent(savedRepo)}`);
+        if (restoreId === choiceId.current) setContext(imported);
+      } catch (cause) {
+        if (restoreId === choiceId.current) setPublicImportError((cause as Error).message);
+      }
+    };
     json<Session>("/api/github").then(async value => {
       setSession(value);
       if (value.connected) {
@@ -119,17 +128,13 @@ export default function WorkspacePage() {
           json<Repository[]>("/api/github?action=repos"), json<Project[]>("/api/github?action=projects"),
           json<Workspace[]>("/api/accounts")]);
         setRepos(available); setProjects(linked); setAccounts(workspaces);
-        const prior = linked.find(project => project.repository === savedRepo);
+        const prior = linked.find(project => project.repository.toLowerCase() === savedRepo.toLowerCase());
         setWorkspaceId(prior?.accountId || workspaces[0]?.id || "");
-        if (savedRepo && available.some(item => item.fullName === savedRepo)) await choose(savedRepo, prior);
+        const installed = available.find(item => item.fullName.toLowerCase() === savedRepo.toLowerCase());
+        if (installed) await choose(installed.fullName, prior);
+        else if (savedRepo && restoreId === choiceId.current) await restorePublic();
       } else if (savedRepo && restoreId === choiceId.current) {
-        // shortcut: re-fetch public context on reload; cache by commit if anonymous GitHub rate limits become common.
-        try {
-          const imported = await importContext("", savedRepo, true);
-          if (restoreId === choiceId.current) setContext(imported);
-        } catch (cause) {
-          if (restoreId === choiceId.current) setPublicImportError((cause as Error).message);
-        }
+        await restorePublic();
       }
     }).catch(cause => setError((cause as Error).message));
   }, [choose]);
@@ -185,7 +190,7 @@ export default function WorkspacePage() {
     setBusy(true); setError(""); setPublicImportError("");
     try {
       const name = parseRepo(publicRepoInput.trim());
-      const imported = await importContext("", name, true);
+      const imported = await json<Context>(`/api/github/public?repo=${encodeURIComponent(name)}`);
       if (requestId !== choiceId.current) return;
       if (repo) restoreDraft(name);
       else {
@@ -308,9 +313,9 @@ export default function WorkspacePage() {
           }}
           loadFile={path => session?.connected && selectedProject
             ? json<{ path: string; text: string }>(`/api/github?action=file&repo=${encodeURIComponent(context.repository)}&path=${encodeURIComponent(path)}&ref=${context.commitSha}`)
-            : readContextFile("", context.repository, path, context.commitSha, true)} />
-        {context.truncated && <p className="mt-2 text-caption-1-regular text-text-tertiary">GitHub limited this file tree; some paths may be missing.</p>}<div className="mt-6 border-t border-separator-border pt-5"><div className="flex items-center justify-between gap-2"><h3 className="text-body-medium">Recent spec proposals</h3><Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh spec proposals" onClick={() => json<SpecProposal[]>(`/api/github?action=specs&repo=${encodeURIComponent(repo)}`).then(setSpecs).catch(cause => setError((cause as Error).message))} /></div>{specs.length ? <ul className="mt-3 space-y-2">{specs.map(spec => <li key={spec.number} className="rounded-xl border border-border-button-default bg-background-primary-default p-3"><a href={spec.url} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">#{spec.number} {spec.title}</a><p className="mt-1 text-caption-1-regular text-text-secondary">{spec.status === "merged" ? "Merged · implementation pending" : spec.status === "open" ? "Awaiting merge" : "Closed without merge"}</p></li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">No recent spec-only pull requests found.</p>}</div></> : <div className="mt-5 rounded-2xl border border-dashed border-border-button-default p-5 text-center"><RiFolder3Line className="mx-auto size-7 text-foreground-icon-tertiary" aria-hidden /><p className="mt-3 text-body-medium">No context imported yet</p><p className="mt-2 text-body-regular text-text-secondary">Choose a connected repository to inspect its structure and instructions.</p></div>}
-        {context && <div className="mt-6 border-t border-separator-border pt-5">
+            : json<{ path: string; text: string }>(`/api/github/public?action=file&repo=${encodeURIComponent(context.repository)}&path=${encodeURIComponent(path)}&ref=${context.commitSha}`)} />
+        {context.truncated && <p className="mt-2 text-caption-1-regular text-text-tertiary">This import is partial; some paths may be missing.</p>}<div className="mt-6 border-t border-separator-border pt-5"><div className="flex items-center justify-between gap-2"><h3 className="text-body-medium">Recent spec proposals</h3><Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh spec proposals" disabled={!selectedProject} onClick={() => json<SpecProposal[]>(`/api/github?action=specs&repo=${encodeURIComponent(repo)}`).then(setSpecs).catch(cause => setError((cause as Error).message))} /></div>{specs.length ? <ul className="mt-3 space-y-2">{specs.map(spec => <li key={spec.number} className="rounded-xl border border-border-button-default bg-background-primary-default p-3"><a href={spec.url} target="_blank" rel="noreferrer" className="text-body-medium text-accent-600 hover:underline">#{spec.number} {spec.title}</a><p className="mt-1 text-caption-1-regular text-text-secondary">{spec.status === "merged" ? "Merged · implementation pending" : spec.status === "open" ? "Awaiting merge" : "Closed without merge"}</p></li>)}</ul> : <p className="mt-2 text-body-regular text-text-secondary">{selectedProject ? "No recent spec-only pull requests found." : "Connect this repository to view spec proposals."}</p>}</div></> : <div className="mt-5 rounded-2xl border border-dashed border-border-button-default p-5 text-center"><RiFolder3Line className="mx-auto size-7 text-foreground-icon-tertiary" aria-hidden /><p className="mt-3 text-body-medium">No context imported yet</p><p className="mt-2 text-body-regular text-text-secondary">Choose a connected repository to inspect its structure and instructions.</p></div>}
+        {context && selectedProject && <div className="mt-6 border-t border-separator-border pt-5">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-body-medium">Implementation runs</h3>
             <Button variant="ghost" size="xs" iconOnly leadingIcon={RiRefreshLine} aria-label="Refresh implementation runs" onClick={() => json<AgentRun[]>(`/api/github?action=runs&repo=${encodeURIComponent(repo)}&refresh=1`).then(setRuns).catch(cause => setError((cause as Error).message))} />

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHmac, generateKeyPairSync, verify } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkProject, listAccountMembers,
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
@@ -15,6 +16,7 @@ import { appendCodeReference, draftKey, initialSpec, readDraft } from "./fava-dr
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, latestSkillCommit, listRepositories, listSpecPullRequests, publishSkill, publishSpec, readContextFile, validateSkillDraft, validateSpec, validSkillPath } from "./fava-github.ts";
 import { readJson } from "./fava-json.ts";
+import { importPublicGitContext, readPublicGitFile } from "./fava-public-context.ts";
 import { chooseModel } from "./fava-models.ts";
 import { runEvents } from "./fava-run-events.ts";
 import { createSession, readSession, revokeSession, seal, setSession, unseal } from "./fava-session.ts";
@@ -545,6 +547,58 @@ test("public context import reads without credentials and stops at private metad
     };
     await assert.rejects(importContext("", "owner/repo", true), /Connect GitHub to import a private repository/);
     assert.equal(requests.length, 1);
+  } finally { globalThis.fetch = original; }
+});
+
+test("public Git fallback imports a pinned file map and reads a pinned source file", async () => {
+  const sha = "a".repeat(40);
+  const tarEntry = (path, text) => {
+    const data = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(path);
+    header.write(data.length.toString(8).padStart(11, "0") + "\0", 124);
+    header[156] = 48;
+    return Buffer.concat([header, data, Buffer.alloc((512 - data.length % 512) % 512)]);
+  };
+  const archive = gzipSync(Buffer.concat([
+    tarEntry(`repo-${sha}/README.md`, "Read this first"),
+    tarEntry(`repo-${sha}/src/AGENTS.md`, "Follow these instructions"),
+    tarEntry(`repo-${sha}/src/index.ts`, "export const ready = true;"), Buffer.alloc(1024),
+  ]));
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async url => {
+    requests.push(String(url));
+    if (String(url).includes("info/refs"))
+      return new Response(`001e# service=git-upload-pack\n0000${sha} HEAD\0symref=HEAD:refs/heads/main\n`);
+    if (String(url).includes("codeload.github.com")) return new Response(archive);
+    return new Response("export const ready = true;");
+  };
+  try {
+    const context = await importPublicGitContext("owner/repo");
+    assert.equal(context.commitSha, sha);
+    assert.equal(context.defaultBranch, "main");
+    assert.deepEqual(context.paths, ["README.md", "src/AGENTS.md", "src/index.ts"]);
+    assert.deepEqual(context.files.map(file => file.path), ["README.md", "src/AGENTS.md"]);
+    assert.equal(context.truncated, false);
+    assert.deepEqual(await readPublicGitFile("owner/repo", "src/index.ts", sha),
+      { path: "src/index.ts", text: "export const ready = true;" });
+    assert.equal(requests[2], `https://raw.githubusercontent.com/owner/repo/${sha}/src/index.ts`);
+    await assert.rejects(readPublicGitFile("owner/repo", "../private", sha), /valid file/);
+    assert.equal(requests.length, 3);
+  } finally { globalThis.fetch = original; }
+});
+
+test("public Git fallback rejects unavailable and oversized archives", async () => {
+  const original = globalThis.fetch;
+  const sha = "a".repeat(40);
+  try {
+    globalThis.fetch = async () => new Response(null, { status: 404 });
+    await assert.rejects(importPublicGitContext("owner/private"), /unavailable/);
+    globalThis.fetch = async url => String(url).includes("info/refs")
+      ? new Response(`${sha} HEAD\0symref=HEAD:refs/heads/main\n`)
+      : new Response(Buffer.alloc(8_000_001));
+    await assert.rejects(importPublicGitContext("owner/huge"), /too large for quick import/);
   } finally { globalThis.fetch = original; }
 });
 
