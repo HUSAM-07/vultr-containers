@@ -49,7 +49,7 @@ The intended full harness input is an immutable tuple: `{repository, mergedSpecC
 
 Project skills live in `.fava/skills/*.md` in the target repository. A workspace may select shared skills from any linked repository using the same path. The run pins a commit for each selected skill at spec merge, so later edits cannot silently change an in-flight build. Up to eight skills may be selected per project, and each file is limited to 12 KB. Repository instructions such as `AGENTS.md` are imported as context, not executed as commands by the web service.
 
-The device-paired companion for personal Codex and Claude subscriptions is described in [Personal subscription execution](subscription-execution.md). It can claim a local run and submit a patch. The cloud runner replays that patch and applies the same conformance and draft PR gate. This path has unit coverage but has not been verified end to end against a signed-in provider, an installed GitHub App, and a deployed runner.
+The device-paired companion for personal Codex and Claude subscriptions is described in [Personal subscription execution](subscription-execution.md). It can claim a local run, fetch skills and MCP grants pinned at spec merge, and submit a patch. Its MCP requests pass through a lease-scoped web Worker proxy that checks the approved tool name and grant status. The cloud runner replays that patch and applies the same conformance and draft PR gate. This path has unit coverage but has not been verified end to end against a signed-in provider, an installed GitHub App, and a deployed runner.
 
 ## Delivery sequence
 

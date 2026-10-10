@@ -10,6 +10,7 @@ import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.t
 import { acceptanceCriteria } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice, requireLocalRunReady } from "./fava-devices.ts";
 import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
+import { authorizedLocalMcpGrant, localMcpCapability, localMcpGrants, readLocalMcpCapability } from "./fava-local-mcp.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
 import { addCreatedRepositoryToInstallation, createRepository, importContext, listRepositories, listSpecPullRequests, publishSpec, readContextFile, validateSpec, validSkillPath } from "./fava-github.ts";
@@ -126,7 +127,7 @@ test("local device credentials are project-scoped, hashed, rotated, revoked, and
     sqlite.exec("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 42, '.fava/skills/review.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1)");
     await requireLocalRunReady(db, "p");
     sqlite.exec("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES ('grant', 'p', 'https://mcp.example.org/mcp', '[\"list\"]', 1, 1)");
-    await assert.rejects(requireLocalRunReady(db, "p"), /MCP grants/);
+    await requireLocalRunReady(db, "p");
     sqlite.exec("UPDATE mcp_grants SET revoked_at = 1");
     await requireLocalRunReady(db, "p");
     const saved = sqlite.prepare("SELECT token_hash AS tokenHash FROM local_devices WHERE id = ?").get(paired.id);
@@ -281,6 +282,42 @@ test("local runs receive only their pinned shared skill under an active device l
     await assert.rejects(localRunSkills(db, device, runId, claim.leaseId, "Iv1.test", pem), /no longer active/);
     assert.equal(requests.length, 2);
   } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("local MCP proxy accepts only a pinned grant during its device lease", async () => {
+  const { sqlite, db } = testDb();
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const grantId = "33333333-3333-4333-8333-333333333333";
+  const otherId = "44444444-4444-4444-8444-444444444444";
+  const secret = "s".repeat(40);
+  try {
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model, execution_mode) VALUES ('s', 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol', 'local')")
+      .run("a".repeat(40));
+    sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at, execution_mode) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1, 'local')")
+      .run(runId, "a".repeat(40));
+    for (const id of [grantId, otherId]) sqlite.prepare("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES (?, 'p', 'https://mcp.example.org/mcp', ?, 1, 1)")
+      .run(id, '["list_buckets"]');
+    sqlite.prepare("INSERT INTO run_mcp_grants (run_id, grant_id) VALUES (?, ?)").run(runId, grantId);
+    const paired = await pairDevice(db, "p", 1, "Laptop one");
+    const device = await authenticateDevice(db, `Bearer ${paired.token}`);
+    const claim = await claimLocalRun(db, device);
+    const { grants } = await localMcpGrants(db, device, runId, claim.leaseId, secret);
+    assert.deepEqual(grants.map(grant => ({ id: grant.id, allowedTools: grant.allowedTools })),
+      [{ id: grantId, allowedTools: ["list_buckets"] }]);
+    assert.equal(readLocalMcpCapability(grants[0].token, runId, grantId, secret), claim.leaseId);
+    assert.deepEqual(await authorizedLocalMcpGrant(db, runId, grantId, `Bearer ${grants[0].token}`, secret),
+      { serverUrl: "https://mcp.example.org/mcp", toolsJson: '["list_buckets"]', credentialRef: null });
+    await assert.rejects(authorizedLocalMcpGrant(db, runId, otherId,
+      `Bearer ${localMcpCapability(runId, claim.leaseId, otherId, secret)}`, secret), /no longer active/);
+    await assert.rejects(authorizedLocalMcpGrant(db, runId, grantId,
+      `Bearer ${grants[0].token.slice(0, -1)}${grants[0].token.endsWith("0") ? "1" : "0"}`, secret), /invalid/);
+    sqlite.prepare("UPDATE mcp_grants SET revoked_at = 1 WHERE id = ?").run(grantId);
+    await assert.rejects(authorizedLocalMcpGrant(db, runId, grantId, `Bearer ${grants[0].token}`, secret), /no longer active/);
+    sqlite.prepare("UPDATE mcp_grants SET revoked_at = NULL WHERE id = ?").run(grantId);
+    sqlite.prepare("UPDATE local_devices SET revoked_at = 1 WHERE id = ?").run(device.id);
+    await assert.rejects(authorizedLocalMcpGrant(db, runId, grantId, `Bearer ${grants[0].token}`, secret), /no longer active/);
+  } finally { sqlite.close(); }
 });
 
 test("spec validation rejects template guidance", () => {

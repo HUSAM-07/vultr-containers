@@ -3,6 +3,7 @@ import { env } from "@/lib/runtime-env";
 import { GitHubError } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
 import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewLocalRun, submitLocalRun } from "@/lib/fava-local-runs";
+import { localMcpGrants } from "@/lib/fava-local-mcp";
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,6 +17,10 @@ export async function POST(request: NextRequest) {
       "leaseId" in body && typeof body.leaseId === "string")
       result = await localRunSkills(env.DB, device, body.runId, body.leaseId,
         process.env.GITHUB_APP_CLIENT_ID || "", process.env.GITHUB_APP_PRIVATE_KEY || "");
+    else if (body.action === "mcp" && "runId" in body && typeof body.runId === "string" &&
+      "leaseId" in body && typeof body.leaseId === "string")
+      result = await localMcpGrants(env.DB, device, body.runId, body.leaseId,
+        process.env.FAVA_SESSION_SECRET || "");
     else if (body.action === "heartbeat" && "runId" in body && typeof body.runId === "string" &&
       "leaseId" in body && typeof body.leaseId === "string")
       result = await renewLocalRun(env.DB, device, body.runId, body.leaseId);

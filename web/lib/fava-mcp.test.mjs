@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { allowedMcpRequest, mcpForwardHeaders, mcpServerUrl, mcpTools } from "./fava-mcp.ts";
+import { allowedMcpRequest, forwardMcp, mcpForwardHeaders, mcpServerUrl, mcpTools } from "./fava-mcp.ts";
+import { encryptToken } from "./fava-cloudflare.ts";
 
 test("MCP grants accept only public HTTPS endpoints and named tools", () => {
   assert.equal(mcpServerUrl("https://mcp.example.org/tools"), "https://mcp.example.org/tools");
@@ -34,4 +35,30 @@ test("MCP proxy mirrors modern routing headers from the approved RPC", () => {
   assert.equal(forwarded.get("mcp-param-region"), "us-east-1");
   assert.equal(forwarded.has("authorization"), false);
   assert.equal(mcpForwardHeaders(inbound, { method: "server/discover" }).has("mcp-name"), false);
+});
+
+test("MCP proxy injects only the stored credential and blocks unapproved calls", async () => {
+  const original = globalThis.fetch;
+  const secret = "s".repeat(40);
+  const grant = { serverUrl: "https://mcp.example.org/mcp", toolsJson: '["aws.list_buckets"]',
+    credentialRef: await encryptToken("upstream-secret", "mcp", secret) };
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return Response.json({ jsonrpc: "2.0", result: "ok" }, { headers: { "mcp-session-id": "session" } });
+    };
+    const request = name => new Request("https://fava.example/mcp", { method: "POST",
+      headers: { Authorization: "Bearer run-capability", "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name, arguments: {} } }) });
+    const allowed = await forwardMcp(request("aws.list_buckets"), grant, secret);
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get("mcp-session-id"), "session");
+    assert.equal(allowed.headers.get("cache-control"), "no-store");
+    assert.equal(calls[0].url, grant.serverUrl);
+    assert.equal(calls[0].init.headers.get("authorization"), "Bearer upstream-secret");
+    assert.equal(calls[0].init.headers.get("mcp-name"), "aws.list_buckets");
+    assert.equal((await forwardMcp(request("aws.delete_bucket"), grant, secret)).status, 403);
+    assert.equal(calls.length, 1);
+  } finally { globalThis.fetch = original; }
 });

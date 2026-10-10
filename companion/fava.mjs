@@ -24,8 +24,8 @@ export function validateJob(value) {
     !/^[a-f0-9]{40}$/i.test(value.sha) || !/^specs\/[a-z0-9][a-z0-9-]*\.md$/.test(value.specPath) ||
     !((value.provider === "openai" && value.model === "gpt-6-sol") ||
       (value.provider === "anthropic" && value.model === "claude-sonnet-5")) ||
-    !Number.isSafeInteger(value.pinnedSkills) || value.pinnedSkills < 0 ||
-    !Number.isSafeInteger(value.pinnedMcpGrants) || value.pinnedMcpGrants < 0)
+    !Number.isSafeInteger(value.pinnedSkills) || value.pinnedSkills < 0 || value.pinnedSkills > 8 ||
+    !Number.isSafeInteger(value.pinnedMcpGrants) || value.pinnedMcpGrants < 0 || value.pinnedMcpGrants > 8)
     throw Error("Fava returned an invalid local run");
   return value;
 }
@@ -36,7 +36,36 @@ export function agentEnvironment(source = process.env) {
     "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
     "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"])
     delete environment[name];
+  for (const name of Object.keys(environment)) if (name.startsWith("FAVA_MCP_")) delete environment[name];
   return environment;
+}
+
+export function localMcpConfiguration(value, origin, runId) {
+  if (!Array.isArray(value) || value.length > 8 || !/^[a-f0-9-]{36}$/i.test(runId))
+    throw Error("Fava returned invalid MCP grants");
+  const environment = {};
+  const codexArgs = [];
+  const mcpServers = {};
+  const seen = new Set();
+  const base = value.length ? serverOrigin(origin) : "";
+  for (const [index, grant] of value.entries()) {
+    if (!grant || !/^[a-f0-9-]{36}$/i.test(grant.id) || seen.has(grant.id) ||
+      !/^[a-f0-9-]{36}\.[a-f0-9]{64}$/i.test(grant.token) ||
+      !Array.isArray(grant.allowedTools) || grant.allowedTools.length < 1 || grant.allowedTools.length > 16 ||
+      grant.allowedTools.some(tool => typeof tool !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(tool)) ||
+      new Set(grant.allowedTools).size !== grant.allowedTools.length)
+      throw Error("Fava returned invalid MCP grants");
+    seen.add(grant.id);
+    const name = `fava_${index}`;
+    const variable = `FAVA_MCP_${index}`;
+    const url = `${base}/api/devices/mcp/${runId}/${grant.id}`;
+    environment[variable] = grant.token;
+    codexArgs.push("-c", `mcp_servers.${name}.url=${JSON.stringify(url)}`,
+      "-c", `mcp_servers.${name}.bearer_token_env_var=${JSON.stringify(variable)}`,
+      "-c", `mcp_servers.${name}.enabled_tools=${JSON.stringify(grant.allowedTools)}`);
+    mcpServers[name] = { type: "http", url, headers: { Authorization: "Bearer ${" + variable + "}" } };
+  }
+  return { environment, codexArgs, claudeArgs: value.length ? ["--mcp-config", JSON.stringify({ mcpServers })] : [] };
 }
 
 export async function runProcess(command, args, options = {}) {
@@ -89,9 +118,10 @@ export async function runProcess(command, args, options = {}) {
 }
 
 export function createClient(origin, token, fetcher = fetch) {
-  const url = `${serverOrigin(origin)}/api/devices/runs`;
+  const base = serverOrigin(origin);
+  const url = `${base}/api/devices/runs`;
   if (!tokenPattern.test(token)) throw Error("FAVA_DEVICE_TOKEN is invalid");
-  return async (body, signal) => {
+  const client = async (body, signal) => {
     const response = await fetcher(url, { method: "POST", redirect: "error",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body), signal: AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30_000)]) });
@@ -103,6 +133,8 @@ export function createClient(origin, token, fetcher = fetch) {
     }
     return value;
   };
+  client.origin = base;
+  return client;
 }
 
 function requireSuccess(result, command) {
@@ -138,15 +170,18 @@ export async function runClaim(rawJob, client, externalSignal) {
   const git = async (...args) => requireSuccess(await runProcess("git", args, { cwd: repo, signal: controller.signal }), "git");
   try {
     controller.signal.throwIfAborted();
-    // shortcut: local MCP grants need a lease-scoped outbound proxy before this client can use them.
-    if (job.pinnedMcpGrants)
-      throw Error("This companion does not yet support pinned MCP grants");
     const context = job.pinnedSkills
       ? await client({ action: "skills", runId: job.id, leaseId: job.leaseId }, controller.signal)
       : { skills: "" };
     if (typeof context?.skills !== "string" || context.skills.length > 100_000 ||
       (job.pinnedSkills > 0 && !context.skills))
       throw Error("Fava returned invalid pinned skills");
+    const mcpResponse = job.pinnedMcpGrants
+      ? await client({ action: "mcp", runId: job.id, leaseId: job.leaseId }, controller.signal)
+      : { grants: [] };
+    const mcp = localMcpConfiguration(mcpResponse?.grants, client.origin, job.id);
+    if (mcpResponse.grants.length > job.pinnedMcpGrants)
+      throw Error("Fava returned more MCP grants than were pinned to the run");
     await mkdir(repo);
     await git("init", "-q");
     await git("remote", "add", "origin", `https://github.com/${job.repository}.git`);
@@ -161,12 +196,13 @@ export async function runClaim(rawJob, client, externalSignal) {
       "Change only code needed for its acceptance criteria. Do not edit specs or instruction files, push commits, " +
       "open pull requests, deploy, or access unrelated repositories. Finish with a concise account of changed files and test results.";
     const args = job.provider === "openai"
-      ? ["exec", "--json", "--ephemeral", "--sandbox", "workspace-write", "--approve-for-me", "--model", job.model,
+      ? ["exec", "--ignore-user-config", ...mcp.codexArgs, "--json", "--ephemeral", "--sandbox", "workspace-write", "--approve-for-me", "--model", job.model,
         "--output-last-message", summaryFile, "-"]
-      : ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+      : ["--print", "--strict-mcp-config", ...mcp.claudeArgs, "--output-format", "stream-json", "--verbose", "--no-session-persistence",
         "--permission-mode", "acceptEdits", "--model", job.model];
     const result = await runProcess(job.provider === "openai" ? "codex" : "claude", args,
-      { cwd: repo, input: prompt, signal: controller.signal, timeout: maxRunMs });
+      { cwd: repo, input: prompt, signal: controller.signal, timeout: maxRunMs,
+        env: { ...agentEnvironment(), ...mcp.environment } });
     if (result.code !== 0) throw Error(`${job.provider} exited ${result.code}: ${result.stderr.slice(-500)}`);
     await git("add", "-A");
     const names = (await git("diff", "--cached", "--name-only", "-z", "HEAD")).split("\0").filter(Boolean);
