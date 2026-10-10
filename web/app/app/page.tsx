@@ -17,6 +17,7 @@ import { ProjectMembersPanel } from "@/components/application/project-members-pa
 import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
 import { appendCodeReference, draftKey, initialSpec, readDraft } from "@/lib/fava-drafts";
+import { specValidationError } from "@/lib/fava-criteria";
 import { importContext, parseRepo, readContextFile } from "@/lib/fava-github";
 import { agentModels } from "@/lib/fava-models";
 import { cx } from "@/utils/cx";
@@ -241,6 +242,7 @@ export default function WorkspacePage() {
   }
 
   const selectedProject = projects.find(project => project.repository === repo);
+  const specError = specValidationError(title, content);
 
   return <main className="min-h-dvh bg-background-full p-3 text-text-primary sm:p-5">
     <div className="mx-auto grid min-h-[calc(100dvh-2.5rem)] max-w-[1600px] gap-4 lg:grid-cols-[280px_minmax(0,1fr)_320px]">
@@ -296,7 +298,7 @@ export default function WorkspacePage() {
         <div className="mt-6"><p className="text-body-medium">Where to run</p><div role="group" aria-label="Execution location" className="mt-3 flex flex-wrap gap-2"><Button size="small" variant={executionMode === "cloud" ? "primary" : "secondary"} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")}>Fava cloud</Button><Button size="small" variant={executionMode === "local" ? "primary" : "secondary"} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")}>My computer</Button></div><p className="mt-2 text-caption-1-regular text-text-tertiary">{executionMode === "cloud" ? "Fava cloud uses AI Gateway and Fava's provider billing." : "Pair a computer and run the local companion with your signed-in Codex or Claude subscription. Pinned skills and approved MCP tools are included. Fava still bills its server-side spec review."}</p></div>
         {error && <p role="alert" className="mt-5 rounded-xl border border-border-error-default p-3 text-body-regular text-text-error-primary">{error}</p>}
         {published && <div role="status" className="mt-5 rounded-xl border border-border-button-default bg-background-primary-default p-4"><p className="text-body-medium">Specification PR #{published.number} is ready for review.</p><p className="mt-1 text-body-regular text-text-secondary">Agent implementation waits until this spec is merged.</p><a className="mt-3 inline-flex items-center gap-2 text-body-medium text-accent-600 hover:underline" href={published.url} target="_blank" rel="noreferrer">Open pull request <RiExternalLinkLine className="size-4" aria-hidden /></a></div>}
-        <div className="mt-6 flex flex-wrap items-center gap-3"><Button onClick={() => void publish()} disabled={!session?.connected || !context || !selectedProject || selectedProject.role === "viewer" || busy} leadingIcon={RiGitPullRequestLine}>{busy ? "Working…" : "Create spec pull request"}</Button><span className="text-caption-1-regular text-text-tertiary">Requires editor access to this project and write access to its repository.</span></div>
+        <div className="mt-6 flex flex-wrap items-center gap-3"><Button onClick={() => void publish()} disabled={!session?.connected || !context || !selectedProject || selectedProject.role === "viewer" || Boolean(specError) || busy} leadingIcon={RiGitPullRequestLine}>{busy ? "Working…" : "Create spec pull request"}</Button><span role="status" className="text-caption-1-regular text-text-tertiary">{specError || "Spec is ready. Publishing requires editor access to this project and write access to its repository."}</span></div>
       </section>
 
       <aside className="min-w-0 rounded-3xl border border-border-button-default bg-background-secondary-default p-5"><div className="flex items-center gap-2"><RiFileTextLine className="size-5 text-accent-600" aria-hidden /><h2 className="text-title-3-semibold">Imported context</h2></div>{context ? <><p className="mt-3 text-body-regular text-text-secondary">{context.repository} · {context.defaultBranch} · <a className="font-mono text-accent-600 hover:underline" href={`https://github.com/${context.repository}/commit/${context.commitSha}`} target="_blank" rel="noreferrer">{context.commitSha.slice(0, 7)}</a></p><ContextFileBrowser key={context.repository + "@" + context.commitSha} paths={context.paths} files={context.files}

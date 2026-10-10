@@ -7,7 +7,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   listAccounts, listProjectMembers, listProjects, listRuns, projectAccess, recordSpec,
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
-import { acceptanceCriteria } from "./fava-criteria.ts";
+import { acceptanceCriteria, specValidationError } from "./fava-criteria.ts";
 import { changeDevice, deviceTokenHash, listDevices, pairDevice, requireLocalRunReady } from "./fava-devices.ts";
 import { authenticateDevice, claimLocalRun, failLocalRun, localRunSkills, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { authorizedLocalMcpGrant, localMcpCapability, localMcpGrants, readLocalMcpCapability } from "./fava-local-mcp.ts";
@@ -336,6 +336,9 @@ test("local MCP proxy accepts only a pinned grant during its device lease", asyn
 });
 
 test("spec validation rejects template guidance", () => {
+  assert.equal(specValidationError("", initialSpec), "Use a 5–120 character specification title");
+  assert.match(specValidationError("Export dashboard", initialSpec), /Replace the template guidance/);
+  assert.equal(specValidationError("Export dashboard", spec), null);
   assert.throws(() => chooseModel("arbitrary-model"), /supported agent model/);
   assert.throws(() => validateSpec("Export dashboard", "## Outcome\n\nDescribe the result a user should experience.\n\n## Scope\n\nDescribe what must be built, and what is outside this change.\n\n## Acceptance criteria\n\n- Describe an observable behavior or test."), /Replace the template/);
   assert.equal(validateSpec("Export dashboard", spec).title, "Export dashboard");

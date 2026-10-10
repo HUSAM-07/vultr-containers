@@ -1,4 +1,4 @@
-import { acceptanceCriteria } from "./fava-criteria.ts";
+import { specValidationError } from "./fava-criteria.ts";
 
 export type Repository = { id: number; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string; canPush: boolean; installationId: number };
 
@@ -64,22 +64,8 @@ function base64(text: string) {
 export function validateSpec(title: string, content: string) {
   const cleanTitle = title.trim();
   const cleanContent = content.trim();
-  if (cleanTitle.length < 5 || cleanTitle.length > 120 || cleanContent.length < 80 || cleanContent.length > 40_000)
-    throw new GitHubError(400, "Use a 5–120 character title and 80–40,000 character specification");
-  const sections = cleanContent.split(/^## /m).slice(1).map(block => {
-    const [name, ...body] = block.split("\n");
-    return { name: name.trim().toLowerCase(), body: body.join("\n").trim() };
-  });
-  for (const heading of ["Outcome", "Scope", "Acceptance criteria"]) {
-    if (!sections.some(section => section.name === heading.toLowerCase() && section.body.length >= 20))
-      throw new GitHubError(400, `Add a concrete ${heading.toLowerCase()} section`);
-  }
-  if (cleanContent.includes("Describe the result a user should experience") ||
-    cleanContent.includes("Describe what must be built") ||
-    cleanContent.includes("Describe an observable behavior"))
-    throw new GitHubError(400, "Replace the template guidance with your own specification");
-  if (acceptanceCriteria(cleanContent).length > 25)
-    throw new GitHubError(400, "Use at most 25 acceptance criteria per specification");
+  const error = specValidationError(cleanTitle, cleanContent);
+  if (error) throw new GitHubError(400, error);
   return { title: cleanTitle, content: cleanContent };
 }
 
