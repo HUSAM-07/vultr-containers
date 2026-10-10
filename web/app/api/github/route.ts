@@ -3,6 +3,7 @@ import { env } from "@/lib/runtime-env";
 import { accountAccess, cancelRun, ensurePersonalAccount, linkProject, listProjects, listRuns, projectAccess, recordSpec } from "@/lib/fava-db";
 import { addCreatedRepositoryToInstallation, createRepository, GitHubError, importContext, listRepositories, listSpecPullRequests, parseRepo, publishSpec, readContextFile } from "@/lib/fava-github";
 import { readJson } from "@/lib/fava-json";
+import { requireLocalRunReady } from "@/lib/fava-devices";
 import { chooseModel } from "@/lib/fava-models";
 import { refreshRunPreviews } from "@/lib/fava-run-previews";
 import { clearSession, readSession, revokeSession, setSession } from "@/lib/fava-session";
@@ -126,15 +127,19 @@ export async function POST(request: NextRequest) {
     if (!body || typeof body !== "object" || !("repo" in body) || !("title" in body) || !("content" in body) || !("model" in body))
       throw new GitHubError(400, "Invalid specification");
     const { repo, title, content, model } = body;
+    const executionMode = "executionMode" in body ? body.executionMode : "cloud";
     if (typeof repo !== "string" || typeof title !== "string" || typeof content !== "string")
       return NextResponse.json({ error: "Invalid specification" }, { status: 400 });
+    if (executionMode !== "cloud" && executionMode !== "local")
+      throw new GitHubError(400, "Choose cloud or local execution");
     let selected: ReturnType<typeof chooseModel>;
     try { selected = chooseModel(model); }
     catch { throw new GitHubError(400, "Choose a supported agent model"); }
     const linked = await projectAccess(env.DB, auth.session.user.id, repo, auth.session.token, "editor");
+    if (executionMode === "local") await requireLocalRunReady(env.DB, linked.id);
     await requireWebhookReady(process.env.GITHUB_APP_CLIENT_ID, process.env.GITHUB_APP_PRIVATE_KEY);
     const result = await publishSpec(auth.session.token, repo, title, content);
-    try { await recordSpec(env.DB, linked.id, auth.session.user.id, result, selected); }
+    try { await recordSpec(env.DB, linked.id, auth.session.user.id, result, selected, executionMode); }
     catch { throw new GitHubError(502, `Spec PR ${result.url} was created, but Fava could not track it. Contact the project owner before merging.`); }
     const response = NextResponse.json(result, { status: 201 });
     if (auth.refreshed) await setSession(response, request, auth.session);

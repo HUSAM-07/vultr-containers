@@ -8,7 +8,7 @@ import { accountAccess, cancelRun, createAccount, ensurePersonalAccount, linkPro
   removeAccountMember, removeProjectMember, setAccountMember, setProjectMember } from "./fava-db.ts";
 import { cloudflareToken, decryptToken, encryptToken } from "./fava-cloudflare.ts";
 import { acceptanceCriteria } from "./fava-criteria.ts";
-import { changeDevice, deviceTokenHash, listDevices, pairDevice } from "./fava-devices.ts";
+import { changeDevice, deviceTokenHash, listDevices, pairDevice, requireLocalRunReady } from "./fava-devices.ts";
 import { authenticateDevice, claimLocalRun, failLocalRun, renewLocalRun, submitLocalRun } from "./fava-local-runs.ts";
 import { draftKey, initialSpec, readDraft } from "./fava-drafts.ts";
 import { refreshRunPreviews } from "./fava-run-previews.ts";
@@ -27,9 +27,11 @@ test("browser spec drafts remain scoped to their repository and migrate the prio
     [draftKey("two/project"), JSON.stringify({ title: "Second", content: "Second spec", model: "unknown" })],
   ]);
   const getItem = key => values.get(key) || null;
-  assert.deepEqual(readDraft(getItem, "one/project"), { title: "Original", content: spec, model: "claude-sonnet-5" });
-  assert.deepEqual(readDraft(getItem, "two/project"), { title: "Second", content: "Second spec", model: "gpt-6-sol" });
-  assert.deepEqual(readDraft(getItem, "three/project"), { title: "", content: initialSpec, model: "gpt-6-sol" });
+  assert.deepEqual(readDraft(getItem, "one/project"), { title: "Original", content: spec, model: "claude-sonnet-5", executionMode: "cloud" });
+  assert.deepEqual(readDraft(getItem, "two/project"), { title: "Second", content: "Second spec", model: "gpt-6-sol", executionMode: "cloud" });
+  assert.deepEqual(readDraft(getItem, "three/project"), { title: "", content: initialSpec, model: "gpt-6-sol", executionMode: "cloud" });
+  values.set(draftKey("two/project"), JSON.stringify({ title: "Second", executionMode: "local" }));
+  assert.equal(readDraft(getItem, "two/project").executionMode, "local");
   values.set(draftKey("one/project"), "{bad json");
   assert.equal(readDraft(getItem, "one/project").title, "Original");
 });
@@ -117,8 +119,17 @@ test("run cancellation is project-scoped and stops at the publication fence", as
 test("local device credentials are project-scoped, hashed, rotated, revoked, and audited", async () => {
   const { sqlite, db } = testDb();
   try {
-    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'Team', 1, 1); INSERT INTO account_memberships VALUES ('a', 1, 'owner'); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/repo', 7, 'main', 1)");
+    await assert.rejects(requireLocalRunReady(db, "p"), /Pair a local device/);
     const paired = await pairDevice(db, "p", 1, " My laptop ");
+    await requireLocalRunReady(db, "p");
+    sqlite.exec("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 42, '.fava/skills/review.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1)");
+    await assert.rejects(requireLocalRunReady(db, "p"), /selected skills or MCP grants/);
+    sqlite.exec("UPDATE skills SET active = 0");
+    sqlite.exec("INSERT INTO mcp_grants (id, project_id, server_url, allowed_tools_json, granted_by, granted_at) VALUES ('grant', 'p', 'https://mcp.example.org/mcp', '[\"list\"]', 1, 1)");
+    await assert.rejects(requireLocalRunReady(db, "p"), /selected skills or MCP grants/);
+    sqlite.exec("UPDATE mcp_grants SET revoked_at = 1");
+    await requireLocalRunReady(db, "p");
     const saved = sqlite.prepare("SELECT token_hash AS tokenHash FROM local_devices WHERE id = ?").get(paired.id);
     assert.equal(saved.tokenHash, await deviceTokenHash(paired.token));
     assert.equal(saved.tokenHash.includes(paired.token), false);
@@ -130,6 +141,7 @@ test("local device credentials are project-scoped, hashed, rotated, revoked, and
     assert.equal(sqlite.prepare("SELECT token_hash FROM local_devices WHERE id = ?").get(paired.id).token_hash,
       await deviceTokenHash(rotated.token));
     await changeDevice(db, "p", 1, paired.id, "revoke");
+    await assert.rejects(requireLocalRunReady(db, "p"), /Pair a local device/);
     await assert.rejects(changeDevice(db, "p", 1, paired.id, "rotate"), /not found/);
     assert.deepEqual(sqlite.prepare("SELECT action FROM local_device_events ORDER BY created_at, rowid").all().map(row => row.action),
       ["paired", "rotated", "revoked"]);

@@ -31,11 +31,12 @@ Use `npm run companion -- --once` to claim at most one queued run. Keep the toke
 
 The companion only accepts the two currently pinned model choices. The installed CLI and your plan must support the selected model. Codex uses a workspace-write sandbox with automatic review; Claude uses `acceptEdits`, which may request permission for shell commands. Do not run this companion on a host containing credentials or files you would not let that locally signed-in CLI access.
 
-## Required implementation before showing a Connect subscription control
+## Current connection state
 
 - The project-scoped device API pairs a device, returns its credential once, and supports listing, rotation, revocation, and an audit trail. Only its SHA-256 hash is stored. The companion claims project runs through this API.
+- The workspace now offers a cloud or local execution choice for each spec. Project admins can pair, rotate, and revoke local devices. The server rejects a local spec before creating its GitHub PR if no eligible device is paired or if selected skills or MCP grants would make the local run fail.
 - The server pins cloud or local execution mode when the spec merges, fences competing local claims with a 90-second lease, and refuses claims after device revocation or loss of Fava admin membership. The companion renews the lease and stops its process on cancellation or lease loss.
 - A device can submit a bounded staged diff, summary, and logs to private R2 under an active lease. The runner now replays the diff against the pinned merge commit inside a Sandbox, compares the resulting staged diff byte for byte, then uses the existing conformance review and draft PR publication path. This has unit coverage but cannot run live until the paid Containers runner and AI Gateway credential are available.
 - End-to-end tests with a signed-in provider CLI and a real GitHub installation, including actual PR publication.
 
-Until the local path is verified end to end, the workspace should continue to label cloud model runs as Fava-billed AI Gateway runs. Local runs use the user's CLI subscription for implementation, but Fava's server-side conformance review still uses its configured model billing.
+Until the local path is verified end to end, the workspace labels cloud runs as Fava-billed AI Gateway runs and local runs as subscription execution on the paired computer. Local runs use the user's CLI subscription for implementation, but Fava's server-side conformance review still uses its configured model billing.

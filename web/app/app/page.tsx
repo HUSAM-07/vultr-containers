@@ -12,6 +12,7 @@ import { ContextFileBrowser } from "@/components/application/context-file-browse
 import { RunLog } from "@/components/application/run-log";
 import { RunReview } from "@/components/application/run-review";
 import { McpGrantsPanel } from "@/components/application/mcp-grants-panel";
+import { LocalDevicesPanel } from "@/components/application/local-devices-panel";
 import { ProjectMembersPanel } from "@/components/application/project-members-panel";
 import { SkillsPanel } from "@/components/application/skills-panel";
 import { WorkspaceAccountsPanel, type Workspace } from "@/components/application/workspace-accounts-panel";
@@ -27,7 +28,7 @@ type Project = { id: string; accountId: string; accountName: string; repository:
 type Context = { repository: string; defaultBranch: string; commitSha: string; paths: string[]; truncated: boolean; files: { path: string; text: string }[] };
 type Published = { url: string; number: number; branch: string; path: string };
 type SpecProposal = { number: number; title: string; url: string; path: string; status: "open" | "merged" | "closed"; mergedCommitSha: string | null };
-type AgentRun = { id: string; status: string; model: string; provider: string; mergedCommitSha: string;
+type AgentRun = { id: string; status: string; model: string; provider: string; executionMode: "cloud" | "local"; mergedCommitSha: string;
   specPullNumber: number; specPath: string; pullNumber: number | null; previewUrl: string | null;
   summary: string | null; error: string | null; artifactKey: string | null; publishingAt: number | null };
 
@@ -54,6 +55,7 @@ export default function WorkspacePage() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState(initialSpec);
   const [model, setModel] = useState<string>(agentModels[0].model);
+  const [executionMode, setExecutionMode] = useState<"cloud" | "local">("cloud");
   const [published, setPublished] = useState<Published | null>(null);
   const [specs, setSpecs] = useState<SpecProposal[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -67,7 +69,7 @@ export default function WorkspacePage() {
 
   function restoreDraft(name: string) {
     const draft = readDraft(key => localStorage.getItem(key), name);
-    setTitle(draft.title); setContent(draft.content); setModel(draft.model);
+    setTitle(draft.title); setContent(draft.content); setModel(draft.model); setExecutionMode(draft.executionMode);
   }
 
   const choose = useCallback(async (name: string, existing?: Project) => {
@@ -133,11 +135,11 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (!restored) return;
     try {
-      const draft = { title, content, model };
+      const draft = { title, content, model, executionMode };
       localStorage.setItem(draftKey(repo), JSON.stringify(draft));
       localStorage.setItem("fava:draft", JSON.stringify({ repo, ...draft }));
     } catch { /* Local drafts are optional. */ }
-  }, [repo, title, content, model, restored]);
+  }, [repo, title, content, model, executionMode, restored]);
 
   useEffect(() => {
     if (!session?.connected || !repo || !projects.some(project => project.repository === repo)) return;
@@ -213,7 +215,7 @@ export default function WorkspacePage() {
     setBusy(true); setError(""); setPublished(null);
     try {
       setPublished(await json<Published>("/api/github?action=spec", { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo, title, content, model }) }));
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo, title, content, model, executionMode }) }));
       try { setSpecs(await json<SpecProposal[]>(`/api/github?action=specs&repo=${encodeURIComponent(repo)}`)); }
       catch { /* The pull request was created; a stale list should not report publication failure. */ }
     } catch (cause) { setError((cause as Error).message); }
@@ -290,7 +292,8 @@ export default function WorkspacePage() {
         {session?.connected && repo && !selectedProject && <div className="mt-7 rounded-2xl border border-border-button-default bg-background-primary-default p-5"><h2 className="text-body-medium">Connect this repository to publish</h2><p className="mt-2 text-body-regular text-text-secondary">Your draft is saved. Install the Fava GitHub App on {repo}, then refresh repositories and select it to open a spec pull request.</p>{session.installUrl && <ButtonLink href={session.installUrl} target="_blank" rel="noreferrer" variant="secondary" size="small" className="mt-4">Install GitHub App</ButtonLink>}</div>}
         {session?.connected && !repo && <div className="mt-7 rounded-2xl border border-dashed border-border-button-default bg-background-primary-default p-5"><h2 className="text-body-medium">Choose a repository to import</h2><p className="mt-2 text-body-regular text-text-secondary">Fava will read its file map and project instructions. The code stays in GitHub.</p></div>}
         <div className="mt-8 grid gap-6"><Input label="Specification title" placeholder="What should change?" value={title} onChange={setTitle} maxLength={120} /><Textarea label="Specification" value={content} onChange={setContent} rows={16} resize="vertical" maxLength={40000} hint="Include the outcome, scope, and up to 25 acceptance criteria. Your draft is saved in this browser." /></div>
-        <div className="mt-6"><p className="text-body-medium">Implementation agent</p><p className="mt-1 text-body-regular text-text-secondary">Fava records this choice with the spec PR. Work is queued only after the spec merges.</p><div role="group" aria-label="Implementation agent" className="mt-3 flex flex-wrap gap-2">{agentModels.map(option => <Button key={option.model} variant={model === option.model ? "primary" : "secondary"} size="small" aria-pressed={model === option.model} onClick={() => setModel(option.model)}>{option.label}</Button>)}</div><p className="mt-2 text-caption-1-regular text-text-tertiary">Runs use Fava&apos;s configured AI Gateway and provider billing. Selecting a model does not connect a personal Codex or Claude subscription.</p></div>
+        <div className="mt-6"><p className="text-body-medium">Implementation agent</p><p className="mt-1 text-body-regular text-text-secondary">Fava records this choice with the spec PR. Work is queued only after the spec merges.</p><div role="group" aria-label="Implementation agent" className="mt-3 flex flex-wrap gap-2">{agentModels.map(option => <Button key={option.model} variant={model === option.model ? "primary" : "secondary"} size="small" aria-pressed={model === option.model} onClick={() => setModel(option.model)}>{option.label}</Button>)}</div></div>
+        <div className="mt-6"><p className="text-body-medium">Where to run</p><div role="group" aria-label="Execution location" className="mt-3 flex flex-wrap gap-2"><Button size="small" variant={executionMode === "cloud" ? "primary" : "secondary"} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")}>Fava cloud</Button><Button size="small" variant={executionMode === "local" ? "primary" : "secondary"} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")}>My computer</Button></div><p className="mt-2 text-caption-1-regular text-text-tertiary">{executionMode === "cloud" ? "Fava cloud uses AI Gateway and Fava's provider billing." : "Pair a computer and run the local companion with your signed-in Codex or Claude subscription. Selected skills and MCP grants are not yet supported locally. Fava still bills its server-side spec review."}</p></div>
         {error && <p role="alert" className="mt-5 rounded-xl border border-border-error-default p-3 text-body-regular text-text-error-primary">{error}</p>}
         {published && <div role="status" className="mt-5 rounded-xl border border-border-button-default bg-background-primary-default p-4"><p className="text-body-medium">Specification PR #{published.number} is ready for review.</p><p className="mt-1 text-body-regular text-text-secondary">Agent implementation waits until this spec is merged.</p><a className="mt-3 inline-flex items-center gap-2 text-body-medium text-accent-600 hover:underline" href={published.url} target="_blank" rel="noreferrer">Open pull request <RiExternalLinkLine className="size-4" aria-hidden /></a></div>}
         <div className="mt-6 flex flex-wrap items-center gap-3"><Button onClick={() => void publish()} disabled={!session?.connected || !context || !selectedProject || selectedProject.role === "viewer" || busy} leadingIcon={RiGitPullRequestLine}>{busy ? "Working…" : "Create spec pull request"}</Button><span className="text-caption-1-regular text-text-tertiary">Requires editor access to this project and write access to its repository.</span></div>
@@ -310,7 +313,7 @@ export default function WorkspacePage() {
           {runs.length ? <ul className="mt-3 space-y-2">{runs.map(run =>
             <li key={run.id} className="rounded-xl border border-border-button-default bg-background-primary-default p-3">
               <p className="text-body-medium">Spec #{run.specPullNumber} · {run.status === "succeeded" ? run.pullNumber ? "Agent completed · draft PR" : "Agent completed · PR pending" : run.status === "running" && run.publishingAt ? "Publishing implementation PR" : run.status}</p>
-              <p className="mt-1 text-caption-1-regular text-text-secondary">{run.model} · {run.mergedCommitSha.slice(0, 7)}</p>
+              <p className="mt-1 text-caption-1-regular text-text-secondary">{run.model} · {run.executionMode === "local" ? "My computer" : "Fava cloud"} · {run.mergedCommitSha.slice(0, 7)}</p>
               {run.pullNumber && <a href={`https://github.com/${repo}/pull/${run.pullNumber}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-body-medium text-accent-600 hover:underline">Implementation PR #{run.pullNumber} <RiExternalLinkLine className="size-4" aria-hidden /></a>}
               {run.summary && <p className="mt-2 text-body-regular text-text-secondary">{run.summary}</p>}
               {run.error && <p className="mt-2 text-body-regular text-text-error-primary">{run.error}</p>}
@@ -330,7 +333,7 @@ export default function WorkspacePage() {
             canManageWorkspace={selectedProject.accountRole === "owner" || selectedProject.accountRole === "admin"} />
           <McpGrantsPanel key={`mcp-${repo}`} repository={repo} />
           {(selectedProject.role === "owner" || selectedProject.role === "admin") &&
-            <ProjectMembersPanel key={`members-${repo}`} repository={repo} />}
+            <><LocalDevicesPanel key={`devices-${repo}`} repository={repo} /><ProjectMembersPanel key={`members-${repo}`} repository={repo} /></>}
           <CloudflarePreviewPanel key={`preview-${repo}`} repository={repo} />
         </>}
         <div className="mt-6 border-t border-separator-border pt-5"><a href="/demo" className="inline-flex items-center gap-2 text-body-medium text-text-secondary hover:text-text-primary">View the current agent demo <RiArrowRightLine className="size-4" aria-hidden /></a></div></aside>
