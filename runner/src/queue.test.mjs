@@ -1,0 +1,382 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { dispatch, reconcile } from "./queue.ts";
+
+const runId = "11111111-1111-4111-8111-111111111111";
+const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+function fixture() {
+  const sqlite = new DatabaseSync(":memory:");
+  for (const file of ["0001_core.sql", "0002_spec_model.sql", "0003_run_output.sql", "0004_run_started_at.sql", "0006_run_skills.sql", "0008_run_mcp_grants.sql", "0009_implementation_sha.sql", "0010_run_publication_fence.sql", "0011_server_sessions.sql", "0013_local_devices.sql", "0014_local_run_leases.sql", "0015_local_submissions.sql"])
+    sqlite.exec(readFileSync(new URL(`../../infra/cloudflare/${file}`, import.meta.url), "utf8"));
+  sqlite.exec("INSERT INTO users VALUES (1, 'owner', '', 1); INSERT INTO accounts VALUES ('a', 'owner', 1, 1); INSERT INTO projects VALUES ('p', 'a', 42, 'owner/private', 7, 'main', 1)");
+  sqlite.prepare("INSERT INTO specs (id, project_id, path, branch, pull_number, status, merged_commit_sha, created_by, created_at, provider, model) VALUES (?, 'p', 'specs/change.md', 'spec/change', 4, 'merged', ?, 1, 1, 'openai', 'gpt-6-sol')")
+    .run("s", "a".repeat(40));
+  sqlite.prepare("INSERT INTO runs (id, spec_id, merged_commit_sha, model, provider, status, created_at) VALUES (?, 's', ?, 'gpt-6-sol', 'openai', 'queued', 1)")
+    .run(runId, "a".repeat(40));
+  const writes = new Map();
+  const starts = [];
+  let task = { state: "running" };
+  let stopped = false;
+  let snapshotChanged = false;
+  const verified = [];
+  const diff = "diff --git a/a b/a\n+new code\n";
+  const sandbox = { async start(job) { starts.push(job); return "started"; },
+    async verifyLocal(...args) { verified.push(args); task = { state: "succeeded", result: args[3] }; return "started"; },
+    async status() { return task; }, async logs() { return { stdout: "agent events", stderr: "" }; },
+    async diff() { return diff; },
+    async spec() { return "## Outcome\n\nBuild requested change.\n\n## Acceptance criteria\n\n- Add new code."; },
+    async changes(hash) {
+      assert.equal(hash, createHash("sha256").update(diff).digest("hex"));
+      if (snapshotChanged) throw Error("Staged changes differ from reviewed diff");
+      return [{ path: "a", mode: "100644", content: "bmV3IGNvZGU=" }];
+    },
+    async stop() { stopped = true; } };
+  const env = { DB: { prepare(sql) { let values = [];
+    return { bind(...args) { values = args; return this; },
+      async all() { return { results: sqlite.prepare(sql).all(...values).map(row => ({ ...row })) }; },
+      async run() { return { meta: { changes: sqlite.prepare(sql).run(...values).changes } }; } }; } },
+    SANDBOX: { getByName(id) { assert.equal(id, runId); return sandbox; } },
+    ARTIFACTS: { async put(key, body) { writes.set(key, body); },
+      async get(key) { const value = writes.get(key); if (value === undefined) return null;
+        const bytes = typeof value === "string" ? Buffer.from(value) : Buffer.from(value);
+        return { size: bytes.byteLength, async text() { return bytes.toString(); },
+          async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); } }; } },
+    AI_GATEWAY_ACCOUNT_ID: "account", AI_GATEWAY_ID: "default", AI_GATEWAY_TOKEN: "gateway-token", GITHUB_APP_CLIENT_ID: "Iv1.test",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }),
+    FAVA_RUN_SECRET: "s".repeat(40) };
+  return { sqlite, env, starts, writes, verified, setTask(value) { task = value; },
+    setSnapshotChanged(value) { snapshotChanged = value; }, wasStopped() { return stopped; } };
+}
+
+test("only a merged spec claims a run, once, then stores its diff and logs", async () => {
+  const { sqlite, env, starts, writes, setTask } = fixture();
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, options) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/ai/v1/chat/completions")) return Response.json({ choices: [{ message: {
+        content: JSON.stringify({ pass: true, unmet: [], unrelated: [], evidence: ["Code changed for the requested criterion"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      if (path === "/app/installations/7/access_tokens") return Response.json({ token: "publisher" });
+      if (path.endsWith(`/git/ref/heads/impl/${runId}`)) return new Response(null, { status: 404 });
+      if (path.endsWith(`/git/commits/${"a".repeat(40)}`)) return Response.json({ tree: { sha: "b".repeat(40) } });
+      if (path.endsWith("/git/blobs")) {
+        assert.deepEqual(JSON.parse(options.body), { content: "bmV3IGNvZGU=", encoding: "base64" });
+        return Response.json({ sha: "c".repeat(40) });
+      }
+      if (path.endsWith("/git/trees")) {
+        assert.deepEqual(JSON.parse(options.body), { base_tree: "b".repeat(40),
+          tree: [{ path: "a", mode: "100644", type: "blob", sha: "c".repeat(40) }] });
+        return Response.json({ sha: "d".repeat(40) });
+      }
+      if (path.endsWith("/git/commits") && options.method === "POST") return Response.json({ sha: "e".repeat(40) });
+      if (path.endsWith("/git/refs")) {
+        assert.deepEqual(JSON.parse(options.body), { ref: `refs/heads/impl/${runId}`, sha: "e".repeat(40) });
+        return Response.json({ object: { sha: "e".repeat(40) } });
+      }
+      if (path.endsWith("/pulls") && options.method === "GET") return Response.json([]);
+      if (path.endsWith("/pulls") && options.method === "POST") {
+        assert.deepEqual({ ...JSON.parse(options.body), body: undefined }, { title: "impl: spec #4",
+          head: `impl/${runId}`, base: "main", draft: true, body: undefined });
+        return Response.json({ number: 8, html_url: "https://github.com/owner/private/pull/8" });
+      }
+      throw Error(`Unexpected GitHub request ${url}`);
+    };
+    await dispatch(env);
+    assert.equal(starts.length, 1);
+    assert.deepEqual(starts[0], { id: runId, repository: "owner/private", repositoryId: 42,
+      installationId: 7, sha: "a".repeat(40), specPath: "specs/change.md", provider: "openai", model: "gpt-6-sol", skills: "", mcpGrantIds: [] });
+    await dispatch(env);
+    assert.equal(starts.length, 1);
+    setTask({ state: "succeeded", result: "Built requested change" });
+    await reconcile(env);
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, summary, artifact_key AS artifactKey, implementation_branch AS branch, implementation_sha AS sha, pull_number AS pullNumber FROM runs WHERE id = ?").get(runId) },
+      { status: "succeeded", summary: "Built requested change", artifactKey: `runs/${runId}`,
+        branch: `impl/${runId}`, sha: "e".repeat(40), pullNumber: 8 });
+    assert.equal(writes.get(`runs/${runId}/diff.patch`).includes("new code"), true);
+    assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
+    assert.equal(writes.get(`runs/${runId}/stderr.log`), "");
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, true);
+    assert.equal(sqlite.prepare("SELECT publishing_at FROM runs WHERE id = ?").get(runId).publishing_at > 0, true);
+  } finally { globalThis.fetch = originalFetch; sqlite.close(); }
+});
+
+test("cloud dispatch ignores a locally assigned run", async () => {
+  const { sqlite, env, starts } = fixture();
+  try {
+    sqlite.exec("UPDATE runs SET execution_mode = 'local'");
+    await dispatch(env);
+    await reconcile(env);
+    assert.equal(starts.length, 0);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "queued");
+  } finally { sqlite.close(); }
+});
+
+test("submitted local diff reaches server review only after artifact hash verification", async () => {
+  const { sqlite, env, writes, verified } = fixture();
+  const original = globalThis.fetch;
+  try {
+    const patch = "diff --git a/a b/a\n+new code\n";
+    const input = JSON.stringify({ patch, summary: "Local change", stdout: "local log", stderr: "" });
+    const hash = createHash("sha256").update(input).digest("hex");
+    const lease = "22222222-2222-4222-8222-222222222222";
+    const key = `runs/${runId}/local-${lease}-${hash}.json`;
+    writes.set(key, input);
+    sqlite.prepare("UPDATE runs SET status = 'running', execution_mode = 'local', lease_id = ?, local_submission_key = ?, local_submission_sha256 = ?, local_submitted_at = ?, started_at = ? WHERE id = ?")
+      .run(lease, key, hash, Date.now(), Date.now(), runId);
+    sqlite.exec("UPDATE specs SET execution_mode = 'local'");
+    globalThis.fetch = async url => {
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false,
+        unmet: ["Acceptance criterion needs more work"], unrelated: [], evidence: [], fileEvidence: [] }) } }] });
+    };
+    await reconcile(env);
+    assert.equal(verified.length, 1);
+    assert.equal(verified[0][1], hash);
+    assert.equal(verified[0][2], patch);
+    assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, false);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+  const tampered = fixture();
+  try {
+    const hash = "a".repeat(64);
+    const lease = "22222222-2222-4222-8222-222222222222";
+    const key = `runs/${runId}/local-${lease}-${hash}.json`;
+    tampered.writes.set(key, JSON.stringify({ patch: "diff --git a/a b/a\n+unsafe\n", summary: "Unreviewed", stdout: "", stderr: "" }));
+    tampered.sqlite.prepare("UPDATE runs SET status = 'running', execution_mode = 'local', lease_id = ?, local_submission_key = ?, local_submission_sha256 = ?, local_submitted_at = ?, started_at = ? WHERE id = ?")
+      .run(lease, key, hash, Date.now(), Date.now(), runId);
+    await reconcile(tampered.env);
+    assert.equal(tampered.verified.length, 0);
+    assert.match(tampered.sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /changed after acceptance/);
+  } finally { tampered.sqlite.close(); }
+});
+
+test("dispatch passes only active project grants pinned to the run", async () => {
+  const { sqlite, env, starts } = fixture();
+  try {
+    sqlite.exec("INSERT INTO mcp_grants VALUES ('22222222-2222-4222-8222-222222222222', 'p', 'https://mcp.example.org/mcp', '[\"search\"]', NULL, 1, 1, NULL)");
+    sqlite.exec(`INSERT INTO run_mcp_grants VALUES ('${runId}', '22222222-2222-4222-8222-222222222222')`);
+    await dispatch(env);
+    assert.deepEqual(starts[0].mcpGrantIds, ["22222222-2222-4222-8222-222222222222"]);
+  } finally { sqlite.close(); }
+  const revoked = fixture();
+  try {
+    revoked.sqlite.exec("INSERT INTO mcp_grants VALUES ('22222222-2222-4222-8222-222222222222', 'p', 'https://mcp.example.org/mcp', '[\"search\"]', NULL, 1, 1, 2)");
+    revoked.sqlite.exec(`INSERT INTO run_mcp_grants VALUES ('${runId}', '22222222-2222-4222-8222-222222222222')`);
+    await dispatch(revoked.env);
+    assert.equal(revoked.starts.length, 0);
+    assert.equal(revoked.sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+  } finally { revoked.sqlite.close(); }
+});
+
+test("running agents expose bounded logs before completion and retain them on timeout", async () => {
+  const { sqlite, env, writes, wasStopped } = fixture();
+  try {
+    await dispatch(env);
+    await reconcile(env);
+    assert.equal(sqlite.prepare("SELECT status, artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId).status, "running");
+    assert.equal(sqlite.prepare("SELECT artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId).artifactKey, `runs/${runId}`);
+    assert.equal(writes.get(`runs/${runId}/stdout.log`), "agent events");
+    sqlite.prepare("UPDATE runs SET started_at = ? WHERE id = ?").run(Date.now() - 46 * 60_000, runId);
+    await reconcile(env);
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, artifact_key AS artifactKey FROM runs WHERE id = ?").get(runId) },
+      { status: "failed", artifactKey: `runs/${runId}` });
+    assert.equal(wasStopped(), true);
+  } finally { sqlite.close(); }
+});
+
+test("spec review rejects unrelated changes before GitHub publication", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: false, unmet: [],
+        unrelated: ["Billing file is outside the export spec"], evidence: [], fileEvidence: [] }) } }] });
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const row = sqlite.prepare("SELECT status, error FROM runs WHERE id = ?").get(runId);
+    assert.equal(row.status, "failed");
+    assert.match(row.error, /Billing file is outside/);
+    assert.equal(JSON.parse(writes.get(`runs/${runId}/review.json`)).pass, false);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("a changed staged snapshot cannot reach GitHub publication", async () => {
+  const { sqlite, env, setTask, setSnapshotChanged } = fixture();
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  let githubWrites = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions"))
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true,
+          unmet: [], unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      githubWrites++;
+      throw Error("Unreviewed code must not reach GitHub");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    setSnapshotChanged(true);
+    await reconcile(env);
+    assert.equal(githubWrites, 0);
+    assert.equal(sqlite.prepare("SELECT pull_number FROM runs WHERE id = ?").get(runId).pull_number, null);
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; sqlite.close(); }
+});
+
+test("publication retries reuse the review for the same diff", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  const originalError = console.error;
+  let reviews = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async (url) => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions")) {
+        reviews++;
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      }
+      throw Error("GitHub is temporarily unavailable");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    await reconcile(env);
+    assert.equal(reviews, 1);
+    assert.match(JSON.parse(writes.get(`runs/${runId}/review.json`)).diffSha256, /^[a-f0-9]{64}$/);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "running");
+  } finally { globalThis.fetch = original; console.error = originalError; sqlite.close(); }
+});
+
+test("a cached review missing changed-file coverage cannot publish", async () => {
+  const { sqlite, env, writes, setTask } = fixture();
+  const original = globalThis.fetch;
+  const originalError = console.error;
+  let githubWrites = 0;
+  try {
+    console.error = () => {};
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions"))
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      githubWrites++;
+      throw Error("GitHub is temporarily unavailable");
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const key = `runs/${runId}/review.json`;
+    writes.set(key, JSON.stringify({ ...JSON.parse(writes.get(key)), fileEvidence: [] }));
+    const priorWrites = githubWrites;
+    await reconcile(env);
+    assert.equal(githubWrites, priorWrites);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+  } finally { globalThis.fetch = original; console.error = originalError; sqlite.close(); }
+});
+
+test("a nonretryable review error fails the run without opening a pull request", async () => {
+  const { sqlite, env, setTask } = fixture();
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      assert.equal(new URL(url).pathname.endsWith("/ai/v1/chat/completions"), true);
+      return new Response("Invalid gateway credential", { status: 401 });
+    };
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    await reconcile(env);
+    const row = sqlite.prepare("SELECT status, error FROM runs WHERE id = ?").get(runId);
+    assert.equal(row.status, "failed");
+    assert.match(row.error, /Spec review could not run: Spec review model failed: 401/);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("unmerged specs cannot dispatch even when a run row exists", async () => {
+  const { sqlite, env, starts } = fixture();
+  try {
+    sqlite.exec("UPDATE specs SET status = 'open', merged_commit_sha = NULL");
+    await dispatch(env);
+    assert.deepEqual(starts, []);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "queued");
+  } finally { sqlite.close(); }
+});
+
+test("dispatch loads the skill version pinned when the spec merged", async () => {
+  const { sqlite, env, starts } = fixture();
+  const original = globalThis.fetch;
+  try {
+    sqlite.exec("INSERT INTO skills (id, account_id, project_id, source_repo_id, path, commit_sha, active) VALUES ('skill', 'a', NULL, 42, '.fava/skills/review.md', 'cccccccccccccccccccccccccccccccccccccccc', 1)");
+    sqlite.prepare("INSERT INTO run_skills VALUES (?, 'skill', ?)").run(runId, "b".repeat(40));
+    const content = "Review tests against the merged specification.";
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/access_tokens")) return Response.json({ token: "skill-token" });
+      assert.equal(String(url), `https://api.github.com/repos/owner/private/contents/.fava/skills/review.md?ref=${"b".repeat(40)}`);
+      return Response.json({ content: Buffer.from(content).toString("base64"), encoding: "base64", size: Buffer.byteLength(content) });
+    };
+    await dispatch(env);
+    assert.match(starts[0].skills, /Review tests against the merged specification/);
+    assert.match(starts[0].skills, new RegExp(`@${"b".repeat(40)}`));
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});
+
+test("stale running jobs fail and their containers stop", async () => {
+  const { sqlite, env, wasStopped } = fixture();
+  try {
+    sqlite.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ?")
+      .run(Date.now() - 46 * 60_000, runId);
+    await reconcile(env);
+    assert.equal(sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId).status, "failed");
+    assert.equal(wasStopped(), true);
+  } finally { sqlite.close(); }
+});
+
+test("cancelled installation runs stop their agent container", async () => {
+  const { sqlite, env, wasStopped } = fixture();
+  try {
+    sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'GitHub installation access removed', started_at = 1, completed_at = 2 WHERE id = ?")
+      .run(runId);
+    await reconcile(env);
+    assert.equal(wasStopped(), true);
+    assert.match(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /agent stopped/);
+  } finally { sqlite.close(); }
+});
+
+test("member cancellation stops a running agent and prevents a late implementation PR", async () => {
+  const { sqlite, env, setTask, wasStopped } = fixture();
+  const original = globalThis.fetch;
+  let githubWrites = 0;
+  try {
+    await dispatch(env);
+    setTask({ state: "succeeded", result: "Completed" });
+    globalThis.fetch = async url => {
+      if (new URL(url).pathname.endsWith("/ai/v1/chat/completions")) {
+        sqlite.prepare("UPDATE runs SET status = 'cancelled', error = 'Cancellation requested by project member', completed_at = 2 WHERE id = ?")
+          .run(runId);
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ pass: true, unmet: [],
+          unrelated: [], evidence: ["Requested code change"],
+          fileEvidence: [{ path: "a", criterion: 1, reason: "Adds requested code" }] }) } }] });
+      }
+      githubWrites++;
+      throw Error("Cancelled run must not reach GitHub");
+    };
+    await reconcile(env);
+    assert.equal(githubWrites, 0);
+    assert.deepEqual({ ...sqlite.prepare("SELECT status, publishing_at FROM runs WHERE id = ?").get(runId) },
+      { status: "cancelled", publishing_at: null });
+    await reconcile(env);
+    assert.equal(wasStopped(), true);
+    assert.match(sqlite.prepare("SELECT error FROM runs WHERE id = ?").get(runId).error, /agent stopped/);
+  } finally { globalThis.fetch = original; sqlite.close(); }
+});

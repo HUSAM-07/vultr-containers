@@ -6,8 +6,8 @@ import { cx } from "@/utils/cx";
 const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "Forge — Vultr Agent Rush",
-  description: "Build, run, and verify product work in isolated Vultr sandboxes.",
+  title: "Fava — Spec-first software building",
+  description: "Connect GitHub, write specifications, and build software from a clear source of truth.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

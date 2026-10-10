@@ -1,0 +1,28 @@
+[Unit]
+Description=Fava Forge agent backend
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=fava
+Group=fava
+SupplementaryGroups=docker
+WorkingDirectory=/opt/fava
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+Environment=FORGE_DATA_FILE=/var/lib/fava-forge/runs.json
+EnvironmentFile=/etc/fava-forge.env
+ExecStart=/usr/bin/env node /opt/fava/server/index.mjs
+Restart=on-failure
+RestartSec=3
+StateDirectory=fava-forge
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

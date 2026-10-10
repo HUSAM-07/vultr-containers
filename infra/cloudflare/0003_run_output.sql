@@ -1,0 +1,3 @@
+ALTER TABLE runs ADD COLUMN summary TEXT;
+ALTER TABLE runs ADD COLUMN error TEXT;
+ALTER TABLE runs ADD COLUMN artifact_key TEXT;

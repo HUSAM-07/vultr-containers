@@ -50,7 +50,7 @@ The selected first slice is code execution with an optional static HTML preview 
 ## Services and infrastructure
 
 - **Required:** Vultr Cloud Compute VM, Vultr Serverless Inference, Docker sandbox runtime, public Vercel deployment.
-- **Current prototype:** one Vultr VM, Node 24+ API, per-task Docker container, local persisted JSON run history scoped to signed browser sessions, Next.js frontend on Vercel. The VM should have a persistent data disk, HTTPS reverse proxy, and Docker image pre-pulled.
+- **Deployment plan:** one Vultr VM, Node 24+ API, per-task Docker container, local persisted JSON run history scoped to signed browser sessions, Next.js frontend on Vercel. The [VM setup](deploy/vultr/README.md) provides a persistent systemd state directory and HTTPS reverse proxy template; the VM has not been provisioned yet.
 - **As scope grows:** Convex for organization-scoped durable data from the attached ADLC specification; Vultr Object Storage or Cloudflare R2 for private artifacts; queue/worker separation for long jobs; browser sandbox with Playwright; observability and per-tenant IAM. These are **not implemented** in this slice.
 - **Budget guardrails:** two concurrent runs, 50 starts/day by default, 12 seconds/container, 256 MiB/container. Set a Vultr spend alert before exposing the public demo.
 
@@ -69,6 +69,7 @@ The attached draft describes a much broader organization-scoped platform: Slack,
 - [x] Vercel frontend, Vultr VM backend code, Vultr-default inference endpoint
 - [x] Isolated Docker command and a containment-demo flow
 - [x] Plan, sandbox guard, preview, and visitor isolation checks; frontend production build
+- [x] Vercel project linked and feature-branch preview built; deployment protection still prevents a public demo
 - [ ] Provision Vultr VM, HTTPS and server-only credentials; pull `python:3.12-alpine`; confirm OpenRouter override is unset
 - [ ] Exercise a real inference call and Docker run on that VM
 - [ ] Deploy Vercel frontend with `web` root and backend URL/token

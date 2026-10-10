@@ -1,0 +1,192 @@
+import { chooseModel } from "../../web/lib/fava-models.ts";
+import { publishImplementation } from "./publish.ts";
+import { loadRunSkills } from "./skills.ts";
+import { parseConformanceReport, ReviewError, reviewConformance } from "./conformance.ts";
+import { acceptanceCriteria } from "../../web/lib/fava-criteria.ts";
+import { verifyConformanceCoverage } from "../../web/lib/fava-review.ts";
+import { LocalPatchError } from "./local-patch.ts";
+import type { AgentSandbox } from "./sandbox";
+import type { Env, RunJob } from "./types";
+
+type RunRow = { id: string; repository: string; repositoryId: number; installationId: number;
+  sha: string; specPath: string; provider: string; model: string };
+type RunningRow = RunRow & { startedAt: number; defaultBranch: string; specPullNumber: number;
+  executionMode: "cloud" | "local"; localSubmissionKey: string | null;
+  localSubmissionSha256: string | null; leaseId: string | null };
+
+async function queued(env: Env) {
+  const result = await env.DB.prepare("SELECT runs.id, runs.merged_commit_sha AS sha, runs.provider, runs.model, specs.path AS specPath, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'queued' AND runs.execution_mode = 'cloud' AND projects.installation_id > 0 AND specs.status = 'merged' AND specs.merged_commit_sha = runs.merged_commit_sha ORDER BY runs.created_at LIMIT 3")
+    .all<RunRow>();
+  return result.results;
+}
+
+async function running(env: Env) {
+  const result = await env.DB.prepare("SELECT runs.id, COALESCE(runs.started_at, runs.created_at) AS startedAt, runs.merged_commit_sha AS sha, runs.provider, runs.model, runs.execution_mode AS executionMode, runs.local_submission_key AS localSubmissionKey, runs.local_submission_sha256 AS localSubmissionSha256, runs.lease_id AS leaseId, specs.path AS specPath, specs.pull_number AS specPullNumber, projects.full_name AS repository, projects.github_repo_id AS repositoryId, projects.installation_id AS installationId, projects.default_branch AS defaultBranch FROM runs JOIN specs ON specs.id = runs.spec_id JOIN projects ON projects.id = specs.project_id WHERE runs.status = 'running' AND (runs.execution_mode = 'cloud' OR (runs.execution_mode = 'local' AND runs.local_submitted_at IS NOT NULL)) ORDER BY runs.created_at LIMIT 10")
+    .all<RunningRow>();
+  return result.results;
+}
+
+async function fail(env: Env, id: string, error: string, artifactKey: string | null = null) {
+  await env.DB.prepare("UPDATE runs SET status = 'failed', error = ?, artifact_key = COALESCE(?, artifact_key), completed_at = ? WHERE id = ? AND status = 'running'")
+    .bind(error.slice(0, 2000), artifactKey, Date.now(), id).run();
+}
+
+async function saveLogs(env: Env, id: string, sandbox: DurableObjectStub<AgentSandbox>) {
+  const { stdout, stderr } = await sandbox.logs();
+  const prefix = `runs/${id}`;
+  await Promise.all([
+    env.ARTIFACTS.put(`${prefix}/stdout.log`, stdout, { httpMetadata: { contentType: "text/plain; charset=utf-8" } }),
+    env.ARTIFACTS.put(`${prefix}/stderr.log`, stderr, { httpMetadata: { contentType: "text/plain; charset=utf-8" } }),
+  ]);
+  return prefix;
+}
+
+async function loadRunMcpGrants(env: Env, runId: string) {
+  const result = await env.DB.prepare("SELECT run_mcp_grants.grant_id AS id, CASE WHEN mcp_grants.revoked_at IS NULL AND mcp_grants.project_id = specs.project_id THEN 1 ELSE 0 END AS active FROM run_mcp_grants JOIN runs ON runs.id = run_mcp_grants.run_id JOIN specs ON specs.id = runs.spec_id JOIN mcp_grants ON mcp_grants.id = run_mcp_grants.grant_id WHERE run_mcp_grants.run_id = ? LIMIT 9")
+    .bind(runId).all<{ id: string; active: number }>();
+  if (result.results.length > 8 || result.results.some(grant => !grant.active))
+    throw Error("A pinned MCP grant is unavailable");
+  return result.results.map(grant => grant.id);
+}
+
+async function localSubmission(env: Env, run: RunningRow) {
+  const { id, leaseId, localSubmissionKey: key, localSubmissionSha256: hash } = run;
+  if (!leaseId || !hash || !key || key !== `runs/${id}/local-${leaseId}-${hash}.json`)
+    throw new LocalPatchError("Local submission reference is invalid");
+  const object = await env.ARTIFACTS.get(key);
+  if (!object || object.size > 1_250_000) throw new LocalPatchError("Local submission artifact is missing or too large");
+  const bytes = await object.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  if (actual !== hash) throw new LocalPatchError("Local submission artifact changed after acceptance");
+  let input: unknown;
+  try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw new LocalPatchError("Local submission artifact is invalid JSON"); }
+  if (!input || typeof input !== "object" || !("patch" in input) || typeof input.patch !== "string" ||
+    !("summary" in input) || typeof input.summary !== "string" ||
+    !("stdout" in input) || typeof input.stdout !== "string" ||
+    !("stderr" in input) || typeof input.stderr !== "string" || !input.patch.startsWith("diff --git ") ||
+    input.patch.length > 1_000_000 || input.stdout.length > 100_000 || input.stderr.length > 100_000)
+    throw new LocalPatchError("Local submission artifact has invalid content");
+  return input as { patch: string; summary: string; stdout: string; stderr: string };
+}
+
+export async function reconcile(env: Env) {
+  // shortcut: cancellation stops the container on the next minute tick; use a queue for immediate stops.
+  const cancelled = await env.DB.prepare("SELECT id FROM runs WHERE status = 'cancelled' AND execution_mode = 'cloud' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member') AND started_at IS NOT NULL ORDER BY completed_at LIMIT 10")
+    .all<{ id: string }>();
+  for (const run of cancelled.results) {
+    try {
+      await env.SANDBOX.getByName(run.id).stop();
+      await env.DB.prepare("UPDATE runs SET error = error || '; agent stopped' WHERE id = ? AND status = 'cancelled' AND error IN ('GitHub installation access removed', 'Cancellation requested by project member')")
+        .bind(run.id).run();
+    } catch (error) { console.error("Cancelled agent could not be stopped", run.id, error); }
+  }
+  for (const run of await running(env)) {
+    const { id, startedAt } = run;
+    const sandbox = env.SANDBOX.getByName(id);
+    try {
+      if (run.executionMode === "local") {
+        const input = await localSubmission(env, run);
+        const model = chooseModel(run.model);
+        if (model.provider !== run.provider) throw new LocalPatchError("Local run model changed");
+        await sandbox.verifyLocal({ id, repository: run.repository, repositoryId: run.repositoryId,
+          installationId: run.installationId, sha: run.sha, specPath: run.specPath,
+          provider: model.provider, model: model.model, skills: "", mcpGrantIds: [] },
+        run.localSubmissionSha256!, input.patch, input.summary, input.stdout, input.stderr);
+      }
+      const status = await sandbox.status();
+      if (status.state === "running") {
+        if (startedAt && Date.now() - startedAt > 45 * 60_000) {
+          await fail(env, id, "Agent exceeded the 45-minute run limit");
+          await sandbox.stop();
+        } else {
+          try {
+            const prefix = await saveLogs(env, id, sandbox);
+            await env.DB.prepare("UPDATE runs SET artifact_key = ? WHERE id = ? AND status = 'running' AND artifact_key IS NULL")
+              .bind(prefix, id).run();
+          } catch (error) { console.error("Live log snapshot failed", id, error); }
+        }
+        continue;
+      }
+      if (status.state === "lost") { await fail(env, id, "Agent container stopped before producing a result"); continue; }
+      const prefix = await saveLogs(env, id, sandbox);
+      if (status.state === "failed") { await fail(env, id, status.error, prefix); continue; }
+      const diff = await sandbox.diff();
+      if (!diff.trim()) { await fail(env, id, "Agent completed without code changes", prefix); continue; }
+      await env.ARTIFACTS.put(`${prefix}/diff.patch`, diff, { httpMetadata: { contentType: "text/x-diff; charset=utf-8" } });
+      const diffHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(diff))),
+        byte => byte.toString(16).padStart(2, "0")).join("");
+      const files = await sandbox.changes(diffHash);
+      let review;
+      try {
+        const savedReview = await env.ARTIFACTS.get(`${prefix}/review.json`);
+        let cached: { diffSha256?: string } | null = null;
+        if (savedReview) {
+          try {
+            const parsed = JSON.parse(await savedReview.text());
+            if (!parsed || typeof parsed !== "object") throw Error("Invalid report");
+            cached = parsed as { diffSha256?: string };
+          }
+          catch { throw new ReviewError("Saved spec review is invalid"); }
+        }
+        if (cached && cached.diffSha256 !== diffHash) throw new ReviewError("Spec review source changed after the first review");
+        const spec = await sandbox.spec();
+        review = cached ? parseConformanceReport(cached) : await reviewConformance(env, run, spec, diff, files.map(file => file.path));
+        if (cached) verifyConformanceCoverage(review, acceptanceCriteria(spec).length, files.map(file => file.path));
+        if (!cached) await env.ARTIFACTS.put(`${prefix}/review.json`, JSON.stringify({ ...review, diffSha256: diffHash }),
+          { httpMetadata: { contentType: "application/json; charset=utf-8" } });
+      } catch (error) {
+        if (!(error instanceof ReviewError)) throw error;
+        await fail(env, id, `Spec review could not run: ${error.message}`, prefix);
+        continue;
+      }
+      if (!review.pass) {
+        await fail(env, id, `Spec review rejected changes: ${[...review.unmet, ...review.unrelated].join("; ") || "insufficient evidence"}`, prefix);
+        continue;
+      }
+      const publishing = await env.DB.prepare("UPDATE runs SET publishing_at = COALESCE(publishing_at, ?) WHERE id = ? AND status = 'running'")
+        .bind(Date.now(), id).run();
+      if (publishing.meta.changes !== 1) continue;
+      const published = await publishImplementation(env, run, files, status.result, review);
+      await env.DB.prepare("UPDATE runs SET status = 'succeeded', summary = ?, artifact_key = ?, implementation_branch = ?, implementation_sha = ?, pull_number = ?, completed_at = ? WHERE id = ? AND status = 'running'")
+        .bind(status.result.slice(0, 2000), prefix, published.branch, published.sha, published.pullNumber, Date.now(), id).run();
+    } catch (error) {
+      if (error instanceof LocalPatchError)
+        await fail(env, id, error.message);
+      else {
+        console.error("Run reconciliation failed", id, error);
+        if (startedAt && Date.now() - startedAt > 45 * 60_000)
+          await fail(env, id, "Runner could not recover within 45 minutes");
+      }
+    }
+  }
+}
+
+export async function dispatch(env: Env) {
+  if (!env.AI_GATEWAY_TOKEN || !env.GITHUB_APP_PRIVATE_KEY || !env.FAVA_RUN_SECRET) return;
+  for (const row of await queued(env)) {
+    let model: ReturnType<typeof chooseModel>;
+    try { model = chooseModel(row.model); }
+    catch { continue; }
+    if (model.provider !== row.provider) continue;
+    const claimed = await env.DB.prepare("UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued' AND execution_mode = 'cloud'")
+      .bind(Date.now(), row.id).run();
+    if (claimed.meta.changes !== 1) continue;
+    let skills: string;
+    let mcpGrantIds: string[];
+    try {
+      skills = await loadRunSkills(env, row.id);
+      mcpGrantIds = await loadRunMcpGrants(env, row.id);
+    }
+    catch (error) {
+      await fail(env, row.id, `Run resources could not be loaded: ${error instanceof Error ? error.message : "unknown error"}`);
+      continue;
+    }
+    const job: RunJob = { id: row.id, repository: row.repository, repositoryId: row.repositoryId,
+      installationId: row.installationId, sha: row.sha, specPath: row.specPath,
+      provider: model.provider, model: model.model, skills, mcpGrantIds };
+    try { await env.SANDBOX.getByName(row.id).start(job); }
+    catch (error) { console.error("Run dispatch outcome is unknown; reconciliation will inspect it", row.id, error); }
+  }
+}
